@@ -1,27 +1,50 @@
 import { spawn, type Subprocess } from 'bun';
 
 const INDEXER_RESTART_DELAY_MS = 60_000;
+const ANALYTICS_INTERVAL_MS = 5 * 60 * 1000; // Run analytics every 5 minutes
+
+let analyticsRunning = false;
 
 async function runAnalytics(): Promise<void> {
+  if (analyticsRunning) {
+    console.log('[start-all] Analytics already running, skipping...');
+    return;
+  }
+
+  analyticsRunning = true;
   console.log('[start-all] Running analytics...');
 
-  // Run daily flows analytics
-  const flowsProc = spawn(['bun', 'run', 'src/analytics/dailyFlows.ts'], {
-    stdout: 'inherit',
-    stderr: 'inherit',
-    cwd: process.cwd(),
-  });
-  await flowsProc.exited;
+  try {
+    // Run daily flows analytics
+    const flowsProc = spawn(['bun', 'run', 'src/analytics/dailyFlows.ts'], {
+      stdout: 'inherit',
+      stderr: 'inherit',
+      cwd: process.cwd(),
+    });
+    await flowsProc.exited;
 
-  // Run relayer stats analytics
-  const relayerProc = spawn(['bun', 'run', 'src/analytics/relayerStats.ts'], {
-    stdout: 'inherit',
-    stderr: 'inherit',
-    cwd: process.cwd(),
-  });
-  await relayerProc.exited;
+    // Run relayer stats analytics
+    const relayerProc = spawn(['bun', 'run', 'src/analytics/relayerStats.ts'], {
+      stdout: 'inherit',
+      stderr: 'inherit',
+      cwd: process.cwd(),
+    });
+    await relayerProc.exited;
 
-  console.log('[start-all] Analytics complete.');
+    console.log('[start-all] Analytics complete.');
+  } finally {
+    analyticsRunning = false;
+  }
+}
+
+function startAnalyticsInterval(): void {
+  // Run analytics immediately on startup
+  runAnalytics().catch(console.error);
+
+  // Then run periodically
+  setInterval(() => {
+    runAnalytics().catch(console.error);
+  }, ANALYTICS_INTERVAL_MS);
 }
 
 function startIndexer(): Subprocess {
@@ -36,7 +59,7 @@ function startIndexer(): Subprocess {
   proc.exited.then(async (code) => {
     console.log(`[start-all] Indexer exited with code ${code}`);
 
-    // Run analytics after indexer completes (regardless of exit code)
+    // Run analytics after indexer completes
     try {
       await runAnalytics();
     } catch (err) {
@@ -63,6 +86,9 @@ async function main() {
   // Start the web server first (runs migrations on startup)
   console.log('[start-all] Starting web server...');
   await import('./server');
+
+  // Start periodic analytics (runs immediately, then every 5 minutes)
+  startAnalyticsInterval();
 
   // Start the indexer in the background after server is ready
   startIndexer();
