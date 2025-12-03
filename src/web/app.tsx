@@ -187,6 +187,44 @@ app.get('/relayers', async (c) => {
   );
 });
 
+// GET /status - Indexer status (JSON)
+app.get('/status', async (c) => {
+  const lastBlock = await db.select()
+    .from(schema.metadata)
+    .where(eq(schema.metadata.key, 'last_indexed_block_eth'))
+    .get();
+
+  const eventCount = await db.select({
+    count: sql<number>`count(*)`,
+  }).from(schema.events).get();
+
+  const latestEvent = await db.select({
+    blockNumber: schema.events.blockNumber,
+    blockTimestamp: schema.events.blockTimestamp,
+  })
+    .from(schema.events)
+    .orderBy(desc(schema.events.blockNumber))
+    .limit(1)
+    .get();
+
+  const tokenCount = await db.select({
+    count: sql<number>`count(*)`,
+  }).from(schema.tokens).get();
+
+  return c.json({
+    status: 'ok',
+    indexer: {
+      lastIndexedBlock: lastBlock?.value ? parseInt(lastBlock.value) : null,
+      totalEvents: eventCount?.count || 0,
+      totalTokens: tokenCount?.count || 0,
+      latestEventBlock: latestEvent?.blockNumber || null,
+      latestEventTime: latestEvent?.blockTimestamp
+        ? new Date(latestEvent.blockTimestamp * 1000).toISOString()
+        : null,
+    },
+  });
+});
+
 // GET /ethics - Ethics page
 app.get('/ethics', (c) => {
   return c.render(
