@@ -17,5 +17,6 @@ console.log(`Starting server on http://localhost:${port}`);
 
 export default {
   port,
+  hostname: '0.0.0.0', // Required for Railway/cloud deployment
   fetch: app.fetch,
 };
