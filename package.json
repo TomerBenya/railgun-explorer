@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/server.ts",
+    "start:all": "bun run src/start-all.ts",
     "dev": "bun run --watch src/server.ts",
     "index": "bun run src/indexer/indexEthereum.ts",
     "analytics:flows": "bun run src/analytics/dailyFlows.ts",

@@ -9,7 +9,8 @@ export const START_BLOCK = 16_700_000n;
 
 // Indexer settings
 export const CONFIRMATION_BLOCKS = 12n;
-export const BATCH_SIZE = 1000n; // Public RPCs limit to 1000 blocks per getLogs
+// Alchemy free tier limits to 10 blocks, public RPCs allow ~1000
+export const BATCH_SIZE = BigInt(process.env.BATCH_SIZE || '10');
 
 // Railgun contract addresses on Ethereum mainnet
 export const CONTRACTS = {
