@@ -1,0 +1,25 @@
+{
+  "name": "railgun-dashboard",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/server.ts",
+    "index": "bun run src/indexer/indexEthereum.ts",
+    "analytics:flows": "bun run src/analytics/dailyFlows.ts",
+    "analytics:relayers": "bun run src/analytics/relayerStats.ts",
+    "analytics": "bun run analytics:flows && bun run analytics:relayers",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "bun run src/db/migrate.ts",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.44.7",
+    "hono": "^4.10.7",
+    "viem": "^2.41.2"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.3",
+    "drizzle-kit": "^0.31.7",
+    "typescript": "^5.9.3"
+  }
+}

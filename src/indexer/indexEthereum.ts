@@ -1,0 +1,210 @@
+import { createPublicClient, http } from 'viem';
+import { mainnet } from 'viem/chains';
+import { db, schema } from '../db/client';
+import { eq } from 'drizzle-orm';
+import {
+  RPC_URL, START_BLOCK, CONFIRMATION_BLOCKS, BATCH_SIZE,
+  CONTRACTS,
+} from './config';
+import { decodeSmartWalletEvent, decodeRelayEvent } from './eventDecoder';
+import { resolveTokenId, clearTokenCache } from './tokenResolver';
+
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 2000;
+
+const client = createPublicClient({
+  chain: mainnet,
+  transport: http(RPC_URL),
+});
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function withRetry<T>(fn: () => Promise<T>, context: string): Promise<T> {
+  let lastError: Error | undefined;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      console.warn(`${context} failed (attempt ${attempt}/${MAX_RETRIES}): ${lastError.message}`);
+      if (attempt < MAX_RETRIES) {
+        await sleep(RETRY_DELAY_MS * attempt);
+      }
+    }
+  }
+  throw lastError;
+}
+
+async function getLastIndexedBlock(): Promise<bigint> {
+  const row = await db.select()
+    .from(schema.metadata)
+    .where(eq(schema.metadata.key, 'last_indexed_block_eth'))
+    .get();
+  return row?.value ? BigInt(row.value) : START_BLOCK;
+}
+
+async function setLastIndexedBlock(block: bigint): Promise<void> {
+  await db.insert(schema.metadata)
+    .values({ key: 'last_indexed_block_eth', value: block.toString() })
+    .onConflictDoUpdate({
+      target: schema.metadata.key,
+      set: { value: block.toString() },
+    });
+}
+
+async function getBlockTimestamp(blockNumber: bigint): Promise<number> {
+  const block = await withRetry(
+    () => client.getBlock({ blockNumber }),
+    `getBlock(${blockNumber})`
+  );
+  return Number(block.timestamp);
+}
+
+async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
+  console.log(`Indexing blocks ${fromBlock} to ${toBlock}...`);
+
+  // Fetch logs from both contracts with retry
+  const [smartWalletLogs, relayLogs] = await withRetry(
+    () => Promise.all([
+      client.getLogs({
+        address: CONTRACTS.smartWallet,
+        fromBlock,
+        toBlock,
+      }),
+      client.getLogs({
+        address: CONTRACTS.relay,
+        fromBlock,
+        toBlock,
+      }),
+    ]),
+    `getLogs(${fromBlock}-${toBlock})`
+  );
+
+  // Block timestamps cache for this batch
+  const timestamps = new Map<bigint, number>();
+
+  // Process SmartWallet events
+  for (const log of smartWalletLogs) {
+    const decoded = decodeSmartWalletEvent(log);
+    if (!decoded) continue;
+
+    // Get timestamp
+    if (!timestamps.has(log.blockNumber)) {
+      timestamps.set(log.blockNumber, await getBlockTimestamp(log.blockNumber));
+    }
+
+    // Resolve token
+    const tokenId = decoded.tokenAddress
+      ? await resolveTokenId(decoded.tokenAddress)
+      : null;
+
+    // Compute normalized amount
+    let amountNormalized: number | null = null;
+    if (decoded.rawAmountWei && tokenId) {
+      const token = await db.select().from(schema.tokens).where(eq(schema.tokens.id, tokenId)).get();
+      if (token?.decimals) {
+        amountNormalized = Number(BigInt(decoded.rawAmountWei)) / Math.pow(10, token.decimals);
+      }
+    }
+
+    // Insert event (idempotent)
+    await db.insert(schema.events)
+      .values({
+        txHash: log.transactionHash,
+        logIndex: log.logIndex,
+        blockNumber: Number(log.blockNumber),
+        blockTimestamp: timestamps.get(log.blockNumber)!,
+        contractName: 'SmartWallet',
+        eventName: decoded.eventName,
+        eventType: decoded.eventType,
+        tokenId,
+        rawAmountWei: decoded.rawAmountWei,
+        amountNormalized,
+        relayerAddress: decoded.relayerAddress,
+        fromAddress: decoded.fromAddress,
+        toAddress: decoded.toAddress,
+        metadataJson: JSON.stringify(decoded.metadata),
+      })
+      .onConflictDoNothing();
+  }
+
+  // Process Relay events
+  for (const log of relayLogs) {
+    const decoded = decodeRelayEvent(log);
+    if (!decoded) continue;
+
+    if (!timestamps.has(log.blockNumber)) {
+      timestamps.set(log.blockNumber, await getBlockTimestamp(log.blockNumber));
+    }
+
+    const tokenId = decoded.tokenAddress
+      ? await resolveTokenId(decoded.tokenAddress)
+      : null;
+
+    let amountNormalized: number | null = null;
+    if (decoded.rawAmountWei && tokenId) {
+      const token = await db.select().from(schema.tokens).where(eq(schema.tokens.id, tokenId)).get();
+      if (token?.decimals) {
+        amountNormalized = Number(BigInt(decoded.rawAmountWei)) / Math.pow(10, token.decimals);
+      }
+    }
+
+    await db.insert(schema.events)
+      .values({
+        txHash: log.transactionHash,
+        logIndex: log.logIndex,
+        blockNumber: Number(log.blockNumber),
+        blockTimestamp: timestamps.get(log.blockNumber)!,
+        contractName: 'Relay',
+        eventName: decoded.eventName,
+        eventType: decoded.eventType,
+        tokenId,
+        rawAmountWei: decoded.rawAmountWei,
+        amountNormalized,
+        relayerAddress: decoded.relayerAddress,
+        fromAddress: decoded.fromAddress,
+        toAddress: decoded.toAddress,
+        metadataJson: JSON.stringify(decoded.metadata),
+      })
+      .onConflictDoNothing();
+  }
+
+  console.log(`  Processed ${smartWalletLogs.length + relayLogs.length} events`);
+}
+
+async function main() {
+  console.log('Starting Ethereum indexer...');
+
+  const latestBlock = await withRetry(
+    () => client.getBlockNumber(),
+    'getBlockNumber'
+  );
+  const safeBlock = latestBlock - CONFIRMATION_BLOCKS;
+  let currentBlock = await getLastIndexedBlock();
+
+  console.log(`Latest: ${latestBlock}, Safe: ${safeBlock}, Current: ${currentBlock}`);
+
+  while (currentBlock < safeBlock) {
+    const toBlock = currentBlock + BATCH_SIZE > safeBlock
+      ? safeBlock
+      : currentBlock + BATCH_SIZE;
+
+    try {
+      await indexBatch(currentBlock + 1n, toBlock);
+      await setLastIndexedBlock(toBlock);
+      currentBlock = toBlock;
+    } catch (err) {
+      console.error(`Failed to index batch ${currentBlock + 1n}-${toBlock}:`, err);
+      throw err; // Re-throw after logging; can be changed to continue for resilience
+    }
+
+    // Clear token cache periodically to free memory
+    clearTokenCache();
+  }
+
+  console.log('Indexing complete.');
+}
+
+main().catch(console.error);
