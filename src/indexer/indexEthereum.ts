@@ -85,93 +85,108 @@ async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
   // Block timestamps cache for this batch
   const timestamps = new Map<bigint, number>();
 
-  // Process SmartWallet events
+  let totalDecoded = 0;
+
+  // Process SmartWallet events (currently no events from this contract)
   for (const log of smartWalletLogs) {
-    const decoded = decodeSmartWalletEvent(log);
-    if (!decoded) continue;
+    const decodedEvents = decodeSmartWalletEvent(log);
+    if (decodedEvents.length === 0) continue;
 
     // Get timestamp
     if (!timestamps.has(log.blockNumber)) {
       timestamps.set(log.blockNumber, await getBlockTimestamp(log.blockNumber));
     }
 
-    // Resolve token
-    const tokenId = decoded.tokenAddress
-      ? await resolveTokenId(decoded.tokenAddress)
-      : null;
+    // Process each decoded event (Shield can have multiple commitments)
+    for (let i = 0; i < decodedEvents.length; i++) {
+      const decoded = decodedEvents[i];
 
-    // Compute normalized amount
-    let amountNormalized: number | null = null;
-    if (decoded.rawAmountWei && tokenId) {
-      const token = await db.select().from(schema.tokens).where(eq(schema.tokens.id, tokenId)).get();
-      if (token?.decimals) {
-        amountNormalized = Number(BigInt(decoded.rawAmountWei)) / Math.pow(10, token.decimals);
+      // Resolve token
+      const tokenId = decoded.tokenAddress
+        ? await resolveTokenId(decoded.tokenAddress)
+        : null;
+
+      // Compute normalized amount
+      let amountNormalized: number | null = null;
+      if (decoded.rawAmountWei && tokenId) {
+        const token = await db.select().from(schema.tokens).where(eq(schema.tokens.id, tokenId)).get();
+        if (token?.decimals) {
+          amountNormalized = Number(BigInt(decoded.rawAmountWei)) / Math.pow(10, token.decimals);
+        }
       }
-    }
 
-    // Insert event (idempotent)
-    await db.insert(schema.events)
-      .values({
-        txHash: log.transactionHash,
-        logIndex: log.logIndex,
-        blockNumber: Number(log.blockNumber),
-        blockTimestamp: timestamps.get(log.blockNumber)!,
-        contractName: 'SmartWallet',
-        eventName: decoded.eventName,
-        eventType: decoded.eventType,
-        tokenId,
-        rawAmountWei: decoded.rawAmountWei,
-        amountNormalized,
-        relayerAddress: decoded.relayerAddress,
-        fromAddress: decoded.fromAddress,
-        toAddress: decoded.toAddress,
-        metadataJson: JSON.stringify(decoded.metadata),
-      })
-      .onConflictDoNothing();
+      // Insert event (idempotent) - use logIndex + sub-index for multiple events per log
+      await db.insert(schema.events)
+        .values({
+          txHash: log.transactionHash,
+          logIndex: log.logIndex * 100 + i, // Sub-index for multiple events per log
+          blockNumber: Number(log.blockNumber),
+          blockTimestamp: timestamps.get(log.blockNumber)!,
+          contractName: 'SmartWallet',
+          eventName: decoded.eventName,
+          eventType: decoded.eventType,
+          tokenId,
+          rawAmountWei: decoded.rawAmountWei,
+          amountNormalized,
+          relayerAddress: decoded.relayerAddress,
+          fromAddress: decoded.fromAddress,
+          toAddress: decoded.toAddress,
+          metadataJson: JSON.stringify(decoded.metadata),
+        })
+        .onConflictDoNothing();
+
+      totalDecoded++;
+    }
   }
 
-  // Process Relay events
+  // Process Relay events (Shield/Unshield)
   for (const log of relayLogs) {
-    const decoded = decodeRelayEvent(log);
-    if (!decoded) continue;
+    const decodedEvents = decodeRelayEvent(log);
+    if (decodedEvents.length === 0) continue;
 
     if (!timestamps.has(log.blockNumber)) {
       timestamps.set(log.blockNumber, await getBlockTimestamp(log.blockNumber));
     }
 
-    const tokenId = decoded.tokenAddress
-      ? await resolveTokenId(decoded.tokenAddress)
-      : null;
+    for (let i = 0; i < decodedEvents.length; i++) {
+      const decoded = decodedEvents[i];
 
-    let amountNormalized: number | null = null;
-    if (decoded.rawAmountWei && tokenId) {
-      const token = await db.select().from(schema.tokens).where(eq(schema.tokens.id, tokenId)).get();
-      if (token?.decimals) {
-        amountNormalized = Number(BigInt(decoded.rawAmountWei)) / Math.pow(10, token.decimals);
+      const tokenId = decoded.tokenAddress
+        ? await resolveTokenId(decoded.tokenAddress)
+        : null;
+
+      let amountNormalized: number | null = null;
+      if (decoded.rawAmountWei && tokenId) {
+        const token = await db.select().from(schema.tokens).where(eq(schema.tokens.id, tokenId)).get();
+        if (token?.decimals) {
+          amountNormalized = Number(BigInt(decoded.rawAmountWei)) / Math.pow(10, token.decimals);
+        }
       }
-    }
 
-    await db.insert(schema.events)
-      .values({
-        txHash: log.transactionHash,
-        logIndex: log.logIndex,
-        blockNumber: Number(log.blockNumber),
-        blockTimestamp: timestamps.get(log.blockNumber)!,
-        contractName: 'Relay',
-        eventName: decoded.eventName,
-        eventType: decoded.eventType,
-        tokenId,
-        rawAmountWei: decoded.rawAmountWei,
-        amountNormalized,
-        relayerAddress: decoded.relayerAddress,
-        fromAddress: decoded.fromAddress,
-        toAddress: decoded.toAddress,
-        metadataJson: JSON.stringify(decoded.metadata),
-      })
-      .onConflictDoNothing();
+      await db.insert(schema.events)
+        .values({
+          txHash: log.transactionHash,
+          logIndex: log.logIndex * 100 + i,
+          blockNumber: Number(log.blockNumber),
+          blockTimestamp: timestamps.get(log.blockNumber)!,
+          contractName: 'Relay',
+          eventName: decoded.eventName,
+          eventType: decoded.eventType,
+          tokenId,
+          rawAmountWei: decoded.rawAmountWei,
+          amountNormalized,
+          relayerAddress: decoded.relayerAddress,
+          fromAddress: decoded.fromAddress,
+          toAddress: decoded.toAddress,
+          metadataJson: JSON.stringify(decoded.metadata),
+        })
+        .onConflictDoNothing();
+
+      totalDecoded++;
+    }
   }
 
-  console.log(`  Processed ${smartWalletLogs.length + relayLogs.length} events`);
+  console.log(`  Processed: SmartWallet=${smartWalletLogs.length}, Relay=${relayLogs.length}, Decoded=${totalDecoded}`);
 }
 
 async function main() {

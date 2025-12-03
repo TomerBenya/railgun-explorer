@@ -12,14 +12,36 @@ export interface DecodedEvent {
   metadata: Record<string, unknown>;
 }
 
+// CommitmentPreimage structure from Shield event
+interface TokenData {
+  tokenType: number;
+  tokenAddress: string;
+  tokenSubID: bigint;
+}
+
+interface CommitmentPreimage {
+  npk: string;
+  token: TokenData;
+  value: bigint;
+}
+
+interface ShieldArgs {
+  treeNumber: bigint;
+  startPosition: bigint;
+  commitments: CommitmentPreimage[];
+  shieldCiphertext: unknown[];
+  fees: bigint[];
+}
+
 interface UnshieldArgs {
   to: string;
-  token: string;
+  token: TokenData;
   amount: bigint;
   fee: bigint;
 }
 
-export function decodeSmartWalletEvent(log: Log): DecodedEvent | null {
+// Returns multiple decoded events for Shield (one per commitment)
+export function decodeSmartWalletEvent(log: Log): DecodedEvent[] {
   try {
     const decoded = decodeEventLog({
       abi: SMART_WALLET_ABI,
@@ -28,41 +50,56 @@ export function decodeSmartWalletEvent(log: Log): DecodedEvent | null {
     });
 
     const eventName = decoded.eventName as unknown as string;
-    let eventType: EventType = 'other';
-    let tokenAddress: string | null = null;
-    let rawAmountWei: string | null = null;
-    let toAddress: string | null = null;
+    const events: DecodedEvent[] = [];
 
     if (eventName === 'Shield') {
-      eventType = 'deposit';
-      // Shield events require parsing ciphertext to extract token/amount
-      // TODO: Implement based on actual Railgun format
+      // Shield contains multiple commitments, each with token and value
+      const args = decoded.args as unknown as ShieldArgs;
+
+      for (const commitment of args.commitments) {
+        // Only process ERC20 tokens (tokenType === 0)
+        if (commitment.token.tokenType === 0) {
+          events.push({
+            eventName: 'Shield',
+            eventType: 'deposit',
+            tokenAddress: commitment.token.tokenAddress,
+            rawAmountWei: commitment.value.toString(),
+            relayerAddress: null,
+            fromAddress: null,
+            toAddress: null,
+            metadata: {
+              treeNumber: args.treeNumber.toString(),
+              startPosition: args.startPosition.toString(),
+            },
+          });
+        }
+      }
     } else if (eventName === 'Unshield') {
-      eventType = 'withdrawal';
       const args = decoded.args as unknown as UnshieldArgs;
-      tokenAddress = args.token;
-      rawAmountWei = args.amount.toString();
-      toAddress = args.to;
-    } else if (eventName === 'Transact') {
-      eventType = 'other'; // Regular private transfers, not relayer payments
+      // Only process ERC20 tokens (tokenType === 0)
+      if (args.token.tokenType === 0) {
+        events.push({
+          eventName: 'Unshield',
+          eventType: 'withdrawal',
+          tokenAddress: args.token.tokenAddress,
+          rawAmountWei: args.amount.toString(),
+          relayerAddress: null,
+          fromAddress: null,
+          toAddress: args.to,
+          metadata: {
+            fee: args.fee.toString(),
+          },
+        });
+      }
     }
 
-    return {
-      eventName,
-      eventType,
-      tokenAddress,
-      rawAmountWei,
-      relayerAddress: null,
-      fromAddress: null,
-      toAddress,
-      metadata: (decoded.args as unknown as Record<string, unknown>) ?? {},
-    };
+    return events;
   } catch {
-    return null;
+    return [];
   }
 }
 
-export function decodeRelayEvent(log: Log): DecodedEvent | null {
+export function decodeRelayEvent(log: Log): DecodedEvent[] {
   try {
     const decoded = decodeEventLog({
       abi: RELAY_ABI,
@@ -71,22 +108,52 @@ export function decodeRelayEvent(log: Log): DecodedEvent | null {
     });
 
     const eventName = decoded.eventName as unknown as string;
-    if (eventName === 'RelayerPayment') {
-      const args = decoded.args as unknown as { relayer: string; token: string; amount: bigint };
-      return {
-        eventName: 'RelayerPayment',
-        eventType: 'relayer_payment',
-        tokenAddress: args.token,
-        rawAmountWei: args.amount.toString(),
-        relayerAddress: args.relayer,
-        fromAddress: null,
-        toAddress: null,
-        metadata: args as unknown as Record<string, unknown>,
-      };
+    const events: DecodedEvent[] = [];
+
+    if (eventName === 'Shield') {
+      // Shield contains multiple commitments, each with token and value
+      const args = decoded.args as unknown as ShieldArgs;
+
+      for (const commitment of args.commitments) {
+        // Only process ERC20 tokens (tokenType === 0)
+        if (commitment.token.tokenType === 0) {
+          events.push({
+            eventName: 'Shield',
+            eventType: 'deposit',
+            tokenAddress: commitment.token.tokenAddress,
+            rawAmountWei: commitment.value.toString(),
+            relayerAddress: null,
+            fromAddress: null,
+            toAddress: null,
+            metadata: {
+              treeNumber: args.treeNumber.toString(),
+              startPosition: args.startPosition.toString(),
+            },
+          });
+        }
+      }
+    } else if (eventName === 'Unshield') {
+      const args = decoded.args as unknown as UnshieldArgs;
+      // Only process ERC20 tokens (tokenType === 0)
+      if (args.token.tokenType === 0) {
+        events.push({
+          eventName: 'Unshield',
+          eventType: 'withdrawal',
+          tokenAddress: args.token.tokenAddress,
+          rawAmountWei: args.amount.toString(),
+          relayerAddress: null,
+          fromAddress: null,
+          toAddress: args.to,
+          metadata: {
+            fee: args.fee.toString(),
+          },
+        });
+      }
     }
 
-    return null;
+    return events;
   } catch {
-    return null;
+    // Unknown event signature - skip silently
+    return [];
   }
 }
