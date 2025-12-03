@@ -9,8 +9,9 @@ import {
 import { decodeSmartWalletEvent, decodeRelayEvent } from './eventDecoder';
 import { resolveTokenId, clearTokenCache } from './tokenResolver';
 
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 2000;
+const MAX_RETRIES = 5;
+const RETRY_DELAY_MS = 5000;
+const BATCH_DELAY_MS = parseInt(process.env.BATCH_DELAY_MS || '2000'); // Delay between batches to avoid rate limits
 
 const client = createPublicClient({
   chain: mainnet,
@@ -217,6 +218,11 @@ async function main() {
 
     // Clear token cache periodically to free memory
     clearTokenCache();
+
+    // Delay between batches to avoid rate limiting on public RPCs
+    if (BATCH_DELAY_MS > 0) {
+      await sleep(BATCH_DELAY_MS);
+    }
   }
 
   console.log('Indexing complete.');
