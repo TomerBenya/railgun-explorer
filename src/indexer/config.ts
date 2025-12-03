@@ -3,14 +3,16 @@ import { type Abi } from 'viem';
 // Environment configuration
 export const RPC_URL = process.env.ETH_RPC_URL || 'https://eth.llamarpc.com';
 
-// RailgunSmartWallet deployed ~Feb 2023 (block ~16,700,000)
-// Using a slightly earlier block to ensure we don't miss early events
-export const START_BLOCK = 16_700_000n;
+// Start block - March 2023 (~block 16,800,000)
+// Can be overridden via START_BLOCK env var
+export const START_BLOCK = process.env.START_BLOCK
+  ? BigInt(process.env.START_BLOCK)
+  : 16_800_000n;
 
 // Indexer settings
 export const CONFIRMATION_BLOCKS = 12n;
-// Alchemy free tier limits to 10 blocks, public RPCs allow ~1000
-export const BATCH_SIZE = BigInt(process.env.BATCH_SIZE || '10');
+// Alchemy allows larger batches (~2000 blocks), public RPCs allow ~1000
+export const BATCH_SIZE = BigInt(process.env.BATCH_SIZE || '1000');
 
 // Railgun contract addresses on Ethereum mainnet
 export const CONTRACTS = {
