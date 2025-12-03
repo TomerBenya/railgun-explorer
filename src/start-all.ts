@@ -30,26 +30,12 @@ async function main() {
   const dbPath = process.env.DB_PATH || './railgun_eth.sqlite';
   console.log(`[start-all] Database path: ${dbPath}`);
 
-  // Run migrations first
-  console.log('[start-all] Running database migrations...');
-  const migrateProc = spawn(['bun', 'run', 'src/db/migrate.ts'], {
-    stdout: 'inherit',
-    stderr: 'inherit',
-    cwd: process.cwd(),
-  });
-
-  const migrateCode = await migrateProc.exited;
-  if (migrateCode !== 0) {
-    console.error('[start-all] Migration failed, exiting');
-    process.exit(1);
-  }
-
-  // Start the indexer in the background
-  startIndexer();
-
-  // Start the web server (keeps process alive)
+  // Start the web server first (runs migrations on startup)
   console.log('[start-all] Starting web server...');
   await import('./server');
+
+  // Start the indexer in the background after server is ready
+  startIndexer();
 }
 
 main().catch((err) => {
