@@ -63,6 +63,18 @@ async function getBlockTimestamp(blockNumber: bigint): Promise<number> {
   return Number(block.timestamp);
 }
 
+async function getTransactionSender(txHash: string): Promise<string | null> {
+  try {
+    const tx = await withRetry(
+      () => client.getTransaction({ hash: txHash as `0x${string}` }),
+      `getTransaction(${txHash})`
+    );
+    return tx.from;
+  } catch {
+    return null;
+  }
+}
+
 async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
   console.log(`Indexing blocks ${fromBlock} to ${toBlock}...`);
 
@@ -85,6 +97,8 @@ async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
 
   // Block timestamps cache for this batch
   const timestamps = new Map<bigint, number>();
+  // Transaction sender cache for this batch (for relayer identification)
+  const txSenders = new Map<string, string | null>();
 
   let totalDecoded = 0;
 
@@ -164,6 +178,16 @@ async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
         }
       }
 
+      // For withdrawals, fetch the transaction sender as the relayer
+      let relayerAddress = decoded.relayerAddress;
+      if (decoded.eventType === 'withdrawal' && !relayerAddress) {
+        const txHash = log.transactionHash;
+        if (!txSenders.has(txHash)) {
+          txSenders.set(txHash, await getTransactionSender(txHash));
+        }
+        relayerAddress = txSenders.get(txHash) || null;
+      }
+
       await db.insert(schema.events)
         .values({
           txHash: log.transactionHash,
@@ -176,7 +200,7 @@ async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
           tokenId,
           rawAmountWei: decoded.rawAmountWei,
           amountNormalized,
-          relayerAddress: decoded.relayerAddress,
+          relayerAddress,
           fromAddress: decoded.fromAddress,
           toAddress: decoded.toAddress,
           metadataJson: JSON.stringify(decoded.metadata),

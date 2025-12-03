@@ -1,5 +1,5 @@
 import { db, schema } from '../db/client';
-import { sql, eq } from 'drizzle-orm';
+import { sql, eq, isNotNull, and } from 'drizzle-orm';
 
 async function computeRelayerStats() {
   console.log('Computing relayer stats...');
@@ -7,7 +7,8 @@ async function computeRelayerStats() {
   // Clear existing data
   await db.delete(schema.relayerStatsDaily);
 
-  // Get all relayer payments grouped by date and relayer
+  // Get all withdrawals with relayer addresses, grouped by date and relayer
+  // The relayer is the transaction sender (msg.sender) who submitted the withdrawal
   const payments = await db
     .select({
       date: sql<string>`date(${schema.events.blockTimestamp}, 'unixepoch')`.as('date'),
@@ -16,7 +17,10 @@ async function computeRelayerStats() {
       txCount: sql<number>`count(*)`,
     })
     .from(schema.events)
-    .where(eq(schema.events.eventType, 'relayer_payment'))
+    .where(and(
+      eq(schema.events.eventType, 'withdrawal'),
+      isNotNull(schema.events.relayerAddress)
+    ))
     .groupBy(sql`date(${schema.events.blockTimestamp}, 'unixepoch')`, schema.events.relayerAddress);
 
   // Group by date
