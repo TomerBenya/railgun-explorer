@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "bun run src/server.ts",
+    "start": "bun run src/server.ts",
+    "dev": "bun run --watch src/server.ts",
     "index": "bun run src/indexer/indexEthereum.ts",
     "analytics:flows": "bun run src/analytics/dailyFlows.ts",
     "analytics:relayers": "bun run src/analytics/relayerStats.ts",
