@@ -19,7 +19,9 @@ app.use('*', jsxRenderer(({ children }) => (
         table { width: 100%; border-collapse: collapse; }
         th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #eee; }
         th { background: #f5f5f5; }
+        .chart-container { position: relative; height: 400px; margin: 1rem 0; }
       `}</style>
+      <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     </head>
     <body>
       <header>
@@ -28,6 +30,7 @@ app.use('*', jsxRenderer(({ children }) => (
           <a href="/">Overview</a>
           <a href="/tokens">Tokens</a>
           <a href="/relayers">Relayers</a>
+          <a href="/charts">Charts</a>
           <a href="/ethics">Ethics &amp; Limitations</a>
         </nav>
       </header>
@@ -255,6 +258,95 @@ app.get('/ethics', (c) => {
         <li>Token metadata relies on on-chain calls which may fail for non-standard tokens</li>
         <li>Aggregate volumes are approximations based on decoded event data</li>
       </ul>
+    </section>
+  );
+});
+
+// GET /charts - Charts dashboard with Chart.js
+app.get('/charts', async (c) => {
+  // Fetch daily flows for the chart (last 30 days)
+  const flows = await db.select({
+    date: schema.dailyFlows.date,
+    totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
+    totalWithdrawals: sql<number>`sum(${schema.dailyFlows.totalWithdrawals})`,
+  })
+    .from(schema.dailyFlows)
+    .groupBy(schema.dailyFlows.date)
+    .orderBy(schema.dailyFlows.date)
+    .limit(30);
+
+  // Prepare chart data
+  const chartData = {
+    labels: flows.map(f => f.date),
+    deposits: flows.map(f => f.totalDeposits || 0),
+    withdrawals: flows.map(f => f.totalWithdrawals || 0),
+  };
+
+  return c.render(
+    <section>
+      <h2>Charts Dashboard</h2>
+      <p>Visual analytics for Railgun aggregate flows.</p>
+
+      <h3>Daily Deposits vs Withdrawals</h3>
+      <div class="chart-container">
+        <canvas id="flowsChart"></canvas>
+      </div>
+
+      {/* Embed chart data as JSON for client-side Chart.js */}
+      <script
+        id="chart-data"
+        type="application/json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(chartData) }}
+      />
+
+      {/* Initialize Chart.js */}
+      <script dangerouslySetInnerHTML={{ __html: `
+        (function() {
+          const dataEl = document.getElementById('chart-data');
+          const data = JSON.parse(dataEl.textContent);
+
+          const ctx = document.getElementById('flowsChart').getContext('2d');
+          new Chart(ctx, {
+            type: 'bar',
+            data: {
+              labels: data.labels,
+              datasets: [
+                {
+                  label: 'Deposits',
+                  data: data.deposits,
+                  backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                  borderColor: 'rgba(54, 162, 235, 1)',
+                  borderWidth: 1
+                },
+                {
+                  label: 'Withdrawals',
+                  data: data.withdrawals,
+                  backgroundColor: 'rgba(255, 99, 132, 0.6)',
+                  borderColor: 'rgba(255, 99, 132, 1)',
+                  borderWidth: 1
+                }
+              ]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              scales: {
+                y: {
+                  beginAtZero: true,
+                  title: { display: true, text: 'Volume' }
+                },
+                x: {
+                  title: { display: true, text: 'Date' }
+                }
+              },
+              plugins: {
+                legend: { position: 'top' },
+                title: { display: false }
+              }
+            }
+          });
+        })();
+      `}} />
     </section>
   );
 });
