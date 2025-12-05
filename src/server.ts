@@ -19,7 +19,21 @@ console.log(`Starting server on http://0.0.0.0:${port}`);
 const server = Bun.serve({
   port,
   hostname: '0.0.0.0', // Required for Railway/cloud deployment
-  fetch: app.fetch,
+  fetch: async (req) => {
+    try {
+      return await app.fetch(req);
+    } catch (error) {
+      console.error('Unhandled error in fetch:', error);
+      return new Response(`Internal Server Error: ${error instanceof Error ? error.message : String(error)}`, {
+        status: 500,
+        headers: { 'Content-Type': 'text/plain' },
+      });
+    }
+  },
+  error(error) {
+    console.error('Server error:', error);
+    return new Response(`Server Error: ${error.message}`, { status: 500 });
+  },
 });
 
 console.log(`Server running on http://0.0.0.0:${server.port}`);
