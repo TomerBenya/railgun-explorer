@@ -3,16 +3,23 @@ import { jsxRenderer } from 'hono/jsx-renderer';
 import { db, schema } from '../db/client';
 import { desc, sql, eq, and } from 'drizzle-orm';
 
-type ChainName = 'ethereum' | 'polygon';
+type ChainName = 'ethereum' | 'polygon' | 'all';
 
 function getChainFromQuery(c: any): ChainName {
   const chain = c.req.query('chain') as string;
-  return (chain === 'polygon' ? 'polygon' : 'ethereum') as ChainName;
+  if (chain === 'polygon') return 'polygon';
+  if (chain === 'all') return 'all';
+  return 'ethereum';
 }
 
 function addChainToUrl(url: string, chain: ChainName): string {
   const separator = url.includes('?') ? '&' : '?';
   return `${url}${separator}chain=${chain}`;
+}
+
+function getChainLabel(chain: ChainName): string {
+  if (chain === 'all') return 'All Networks';
+  return chain.charAt(0).toUpperCase() + chain.slice(1);
 }
 
 const app = new Hono();
@@ -84,6 +91,7 @@ app.use('*', jsxRenderer(({ children }) => {
             <div class="network-selector">
               <label for="chain-select">Network:</label>
               <select id="chain-select">
+                <option value="all">All Networks</option>
                 <option value="ethereum">Ethereum</option>
                 <option value="polygon">Polygon</option>
               </select>
@@ -135,21 +143,28 @@ app.use('*', jsxRenderer(({ children }) => {
 app.get('/', async (c) => {
   try {
     const chain = getChainFromQuery(c);
-    const flows = await db.select({
+    const baseQuery = db.select({
       date: schema.dailyFlows.date,
       totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
       totalWithdrawals: sql<number>`sum(${schema.dailyFlows.totalWithdrawals})`,
       netFlow: sql<number>`sum(${schema.dailyFlows.netFlow})`,
     })
-      .from(schema.dailyFlows)
-      .where(eq(schema.dailyFlows.chain, chain))
-      .groupBy(schema.dailyFlows.date)
-      .orderBy(desc(schema.dailyFlows.date))
-      .limit(30);
+      .from(schema.dailyFlows);
+
+    const flows = chain === 'all'
+      ? await baseQuery
+          .groupBy(schema.dailyFlows.date)
+          .orderBy(desc(schema.dailyFlows.date))
+          .limit(30)
+      : await baseQuery
+          .where(eq(schema.dailyFlows.chain, chain))
+          .groupBy(schema.dailyFlows.date)
+          .orderBy(desc(schema.dailyFlows.date))
+          .limit(30);
 
     return c.render(
     <section>
-      <h2>Daily Overview (All Tokens) <span class="chain-badge">{chain.charAt(0).toUpperCase() + chain.slice(1)}</span></h2>
+      <h2>Daily Overview (All Tokens) <span class="chain-badge">{getChainLabel(chain)}</span></h2>
       <table>
         <thead>
           <tr><th>Date</th><th>Deposits</th><th>Withdrawals</th><th>Net Flow</th></tr>
@@ -180,24 +195,36 @@ app.get('/', async (c) => {
 // GET /tokens - Token list
 app.get('/tokens', async (c) => {
   const chain = getChainFromQuery(c);
-  const tokenStats = await db.select({
-    id: schema.tokens.id,
-    symbol: schema.tokens.symbol,
-    address: schema.tokens.address,
-    totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
-  })
-    .from(schema.tokens)
-    .leftJoin(schema.dailyFlows, and(
-      eq(schema.tokens.id, schema.dailyFlows.tokenId),
-      eq(schema.dailyFlows.chain, chain)
-    ))
-    .where(eq(schema.tokens.chain, chain))
-    .groupBy(schema.tokens.id)
-    .orderBy(desc(sql`sum(${schema.dailyFlows.totalDeposits})`));
+
+  const tokenStats = chain === 'all'
+    ? await db.select({
+        id: schema.tokens.id,
+        symbol: schema.tokens.symbol,
+        address: schema.tokens.address,
+        totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
+      })
+        .from(schema.tokens)
+        .leftJoin(schema.dailyFlows, eq(schema.tokens.id, schema.dailyFlows.tokenId))
+        .groupBy(schema.tokens.id)
+        .orderBy(desc(sql`sum(${schema.dailyFlows.totalDeposits})`))
+    : await db.select({
+        id: schema.tokens.id,
+        symbol: schema.tokens.symbol,
+        address: schema.tokens.address,
+        totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
+      })
+        .from(schema.tokens)
+        .leftJoin(schema.dailyFlows, and(
+          eq(schema.tokens.id, schema.dailyFlows.tokenId),
+          eq(schema.dailyFlows.chain, chain)
+        ))
+        .where(eq(schema.tokens.chain, chain))
+        .groupBy(schema.tokens.id)
+        .orderBy(desc(sql`sum(${schema.dailyFlows.totalDeposits})`));
 
   return c.render(
     <section>
-      <h2>Tokens by Deposit Volume <span class="chain-badge">{chain.charAt(0).toUpperCase() + chain.slice(1)}</span></h2>
+      <h2>Tokens by Deposit Volume <span class="chain-badge">{getChainLabel(chain)}</span></h2>
       <table>
         <thead>
           <tr><th>Symbol</th><th>Total Deposits</th><th>Details</th></tr>
@@ -226,20 +253,33 @@ app.get('/tokens/:id', async (c) => {
   const tokenId = parseInt(c.req.param('id'));
   const token = await db.select()
     .from(schema.tokens)
-    .where(and(eq(schema.tokens.id, tokenId), eq(schema.tokens.chain, chain)))
+    .where(eq(schema.tokens.id, tokenId))
     .get();
-  const flows = await db.select()
-    .from(schema.dailyFlows)
-    .where(and(
-      eq(schema.dailyFlows.tokenId, tokenId),
-      eq(schema.dailyFlows.chain, chain)
-    ))
-    .orderBy(desc(schema.dailyFlows.date))
-    .limit(30);
+
+  const flows = chain === 'all'
+    ? await db.select({
+        date: schema.dailyFlows.date,
+        totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
+        totalWithdrawals: sql<number>`sum(${schema.dailyFlows.totalWithdrawals})`,
+        netFlow: sql<number>`sum(${schema.dailyFlows.netFlow})`,
+      })
+        .from(schema.dailyFlows)
+        .where(eq(schema.dailyFlows.tokenId, tokenId))
+        .groupBy(schema.dailyFlows.date)
+        .orderBy(desc(schema.dailyFlows.date))
+        .limit(30)
+    : await db.select()
+        .from(schema.dailyFlows)
+        .where(and(
+          eq(schema.dailyFlows.tokenId, tokenId),
+          eq(schema.dailyFlows.chain, chain)
+        ))
+        .orderBy(desc(schema.dailyFlows.date))
+        .limit(30);
 
   return c.render(
     <section>
-      <h2>{token?.symbol || 'Token'} Daily Flows <span class="chain-badge">{chain.charAt(0).toUpperCase() + chain.slice(1)}</span></h2>
+      <h2>{token?.symbol || 'Token'} Daily Flows <span class="chain-badge">{getChainLabel(chain)}</span></h2>
       <table>
         <thead>
           <tr><th>Date</th><th>Deposits</th><th>Withdrawals</th><th>Net</th></tr>
@@ -266,15 +306,28 @@ app.get('/tokens/:id', async (c) => {
 // GET /relayers - Relayer concentration metrics
 app.get('/relayers', async (c) => {
   const chain = getChainFromQuery(c);
-  const stats = await db.select()
-    .from(schema.relayerStatsDaily)
-    .where(eq(schema.relayerStatsDaily.chain, chain))
-    .orderBy(desc(schema.relayerStatsDaily.date))
-    .limit(30);
+
+  const stats = chain === 'all'
+    ? await db.select({
+        date: schema.relayerStatsDaily.date,
+        numActiveRelayers: sql<number>`sum(${schema.relayerStatsDaily.numActiveRelayers})`,
+        top5Share: sql<number>`avg(${schema.relayerStatsDaily.top5Share})`,
+        hhi: sql<number>`avg(${schema.relayerStatsDaily.hhi})`,
+        relayerTxCount: sql<number>`sum(${schema.relayerStatsDaily.relayerTxCount})`,
+      })
+        .from(schema.relayerStatsDaily)
+        .groupBy(schema.relayerStatsDaily.date)
+        .orderBy(desc(schema.relayerStatsDaily.date))
+        .limit(30)
+    : await db.select()
+        .from(schema.relayerStatsDaily)
+        .where(eq(schema.relayerStatsDaily.chain, chain))
+        .orderBy(desc(schema.relayerStatsDaily.date))
+        .limit(30);
 
   return c.render(
     <section>
-      <h2>Relayer Concentration Metrics <span class="chain-badge">{chain.charAt(0).toUpperCase() + chain.slice(1)}</span></h2>
+      <h2>Relayer Concentration Metrics <span class="chain-badge">{getChainLabel(chain)}</span></h2>
       <p><em>Aggregate statistics only. No individual relayer data exposed.</em></p>
       <table>
         <thead>
@@ -302,38 +355,83 @@ app.get('/relayers', async (c) => {
 
 // GET /status - Indexer status (JSON)
 app.get('/status', async (c) => {
-  const lastBlock = await db.select()
+  // Ethereum stats
+  const lastBlockEth = await db.select()
     .from(schema.metadata)
     .where(eq(schema.metadata.key, 'last_indexed_block_eth'))
     .get();
 
-  const eventCount = await db.select({
+  const ethEventCount = await db.select({
     count: sql<number>`count(*)`,
-  }).from(schema.events).get();
+  }).from(schema.events)
+    .where(eq(schema.events.chain, 'ethereum'))
+    .get();
 
-  const latestEvent = await db.select({
+  const latestEthEvent = await db.select({
     blockNumber: schema.events.blockNumber,
     blockTimestamp: schema.events.blockTimestamp,
   })
     .from(schema.events)
+    .where(eq(schema.events.chain, 'ethereum'))
     .orderBy(desc(schema.events.blockNumber))
     .limit(1)
     .get();
 
-  const tokenCount = await db.select({
+  const ethTokenCount = await db.select({
     count: sql<number>`count(*)`,
-  }).from(schema.tokens).get();
+  }).from(schema.tokens)
+    .where(eq(schema.tokens.chain, 'ethereum'))
+    .get();
+
+  // Polygon stats
+  const lastBlockPolygon = await db.select()
+    .from(schema.metadata)
+    .where(eq(schema.metadata.key, 'last_indexed_block_polygon'))
+    .get();
+
+  const polygonEventCount = await db.select({
+    count: sql<number>`count(*)`,
+  }).from(schema.events)
+    .where(eq(schema.events.chain, 'polygon'))
+    .get();
+
+  const latestPolygonEvent = await db.select({
+    blockNumber: schema.events.blockNumber,
+    blockTimestamp: schema.events.blockTimestamp,
+  })
+    .from(schema.events)
+    .where(eq(schema.events.chain, 'polygon'))
+    .orderBy(desc(schema.events.blockNumber))
+    .limit(1)
+    .get();
+
+  const polygonTokenCount = await db.select({
+    count: sql<number>`count(*)`,
+  }).from(schema.tokens)
+    .where(eq(schema.tokens.chain, 'polygon'))
+    .get();
 
   return c.json({
     status: 'ok',
-    indexer: {
-      lastIndexedBlock: lastBlock?.value ? parseInt(lastBlock.value) : null,
-      totalEvents: eventCount?.count || 0,
-      totalTokens: tokenCount?.count || 0,
-      latestEventBlock: latestEvent?.blockNumber || null,
-      latestEventTime: latestEvent?.blockTimestamp
-        ? new Date(latestEvent.blockTimestamp * 1000).toISOString()
-        : null,
+    indexers: {
+      ethereum: {
+        lastIndexedBlock: lastBlockEth?.value ? parseInt(lastBlockEth.value) : null,
+        totalEvents: ethEventCount?.count || 0,
+        totalTokens: ethTokenCount?.count || 0,
+        latestEventBlock: latestEthEvent?.blockNumber || null,
+        latestEventTime: latestEthEvent?.blockTimestamp
+          ? new Date(latestEthEvent.blockTimestamp * 1000).toISOString()
+          : null,
+      },
+      polygon: {
+        lastIndexedBlock: lastBlockPolygon?.value ? parseInt(lastBlockPolygon.value) : null,
+        totalEvents: polygonEventCount?.count || 0,
+        totalTokens: polygonTokenCount?.count || 0,
+        latestEventBlock: latestPolygonEvent?.blockNumber || null,
+        latestEventTime: latestPolygonEvent?.blockTimestamp
+          ? new Date(latestPolygonEvent.blockTimestamp * 1000).toISOString()
+          : null,
+      },
     },
   });
 });
@@ -376,16 +474,23 @@ app.get('/ethics', (c) => {
 app.get('/charts', async (c) => {
   const chain = getChainFromQuery(c);
   // Fetch daily flows for the chart (last 30 days)
-  const flows = await db.select({
+  const baseQuery = db.select({
     date: schema.dailyFlows.date,
     totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
     totalWithdrawals: sql<number>`sum(${schema.dailyFlows.totalWithdrawals})`,
   })
-    .from(schema.dailyFlows)
-    .where(eq(schema.dailyFlows.chain, chain))
-    .groupBy(schema.dailyFlows.date)
-    .orderBy(schema.dailyFlows.date)
-    .limit(30);
+    .from(schema.dailyFlows);
+
+  const flows = chain === 'all'
+    ? await baseQuery
+        .groupBy(schema.dailyFlows.date)
+        .orderBy(schema.dailyFlows.date)
+        .limit(30)
+    : await baseQuery
+        .where(eq(schema.dailyFlows.chain, chain))
+        .groupBy(schema.dailyFlows.date)
+        .orderBy(schema.dailyFlows.date)
+        .limit(30);
 
   // Prepare chart data
   const chartData = {
@@ -396,7 +501,7 @@ app.get('/charts', async (c) => {
 
   return c.render(
     <section>
-      <h2>Charts Dashboard <span class="chain-badge">{chain.charAt(0).toUpperCase() + chain.slice(1)}</span></h2>
+      <h2>Charts Dashboard <span class="chain-badge">{getChainLabel(chain)}</span></h2>
       <p>Visual analytics for Railgun aggregate flows.</p>
 
       <h3>Daily Deposits vs Withdrawals</h3>

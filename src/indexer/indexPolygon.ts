@@ -4,15 +4,13 @@ import { db, schema } from '../db/client';
 import { eq } from 'drizzle-orm';
 import {
   RPC_URL, START_BLOCK, CONFIRMATION_BLOCKS, BATCH_SIZE,
-  CONTRACTS,
+  BATCH_DELAY_MS, CONTRACTS, RELAY_ABI,
 } from './configPolygon';
 import { decodeSmartWalletEvent, decodeRelayEvent } from './eventDecoder';
-import { RELAY_ABI } from './configPolygon';
 import { resolveTokenId, clearTokenCache } from './tokenResolverPolygon';
 
 const MAX_RETRIES = 5;
 const RETRY_DELAY_MS = 5000;
-const BATCH_DELAY_MS = parseInt(process.env.BATCH_DELAY_MS || '5000'); // Increased default delay to avoid rate limits
 const RATE_LIMIT_DELAY_MS = 30000; // 30 seconds for rate limit errors
 
 const client = createPublicClient({

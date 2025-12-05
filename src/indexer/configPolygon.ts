@@ -1,21 +1,26 @@
 import { type Abi } from 'viem';
 
 // Environment configuration for Polygon
+// Infura works best - no block range limit, just 10k log limit per query
 export const RPC_URL = process.env.POLYGON_RPC_URL || 'https://polygon-mainnet.infura.io/v3/4354acaa8fa44b48b106f9596411a10e';
 
-// Start block - Indexing from contract creation
+// Start block - Skip to where events actually exist
 // SmartWallet deployed at 23,580,067, Relay at 28,062,088
-// Using SmartWallet creation block to catch all events from both contracts
+// But first actual events appear around block 73,277,115
+// Starting from Relay deployment to catch all potential events
 // Can be overridden via POLYGON_START_BLOCK env var
 export const START_BLOCK = process.env.POLYGON_START_BLOCK
   ? BigInt(process.env.POLYGON_START_BLOCK)
-  : 23_580_067n; // SmartWallet contract creation block
+  : 28_062_088n; // Relay contract creation block
 
 // Indexer settings
 export const CONFIRMATION_BLOCKS = 12n;
-// Reduced batch size for Polygon to avoid rate limits on public RPCs
-// Can be increased if using a premium RPC provider
-export const BATCH_SIZE = BigInt(process.env.BATCH_SIZE || '500');
+// Infura allows huge block ranges - limited by 10k logs per response, not block count
+// Using 100k blocks per batch to balance throughput vs rate limits
+export const BATCH_SIZE = BigInt(process.env.POLYGON_BATCH_SIZE || '100000');
+
+// Batch delay in ms - Infura free tier needs ~2s between batches to avoid 429s
+export const BATCH_DELAY_MS = parseInt(process.env.POLYGON_BATCH_DELAY_MS || '2000');
 
 // Railgun contract addresses on Polygon mainnet
 export const CONTRACTS = {
