@@ -7,6 +7,7 @@
     "start:server": "bun run src/server.ts",
     "dev": "bun run --watch src/server.ts",
     "index": "bun run src/indexer/indexEthereum.ts",
+    "index:polygon": "bun run src/indexer/indexPolygon.ts",
     "analytics:flows": "bun run src/analytics/dailyFlows.ts",
     "analytics:relayers": "bun run src/analytics/relayerStats.ts",
     "analytics": "bun run analytics:flows && bun run analytics:relayers",

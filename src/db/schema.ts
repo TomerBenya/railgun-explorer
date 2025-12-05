@@ -1,22 +1,27 @@
 import { sqliteTable, text, integer, real, primaryKey, unique } from 'drizzle-orm/sqlite-core';
 
-// Key-value metadata store (for last_indexed_block_eth, etc.)
+// Key-value metadata store (for last_indexed_block_eth, last_indexed_block_polygon, etc.)
 export const metadata = sqliteTable('metadata', {
   key: text('key').primaryKey(),
   value: text('value'),
 });
 
-// ERC-20 token metadata cache
+// ERC-20 token metadata cache (chain-aware)
 export const tokens = sqliteTable('tokens', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  address: text('address').notNull().unique(), // checksummed
+  chain: text('chain').notNull(), // 'ethereum', 'polygon', 'arbitrum'
+  address: text('address').notNull(), // checksummed
   symbol: text('symbol'),
   decimals: integer('decimals'),
-});
+}, (table) => ({
+  // Unique constraint: same address can exist on different chains
+  chainAddressUnique: unique().on(table.chain, table.address),
+}));
 
 // Raw indexed events from Railgun contracts
 export const events = sqliteTable('events', {
   id: integer('id').primaryKey({ autoIncrement: true }),
+  chain: text('chain').notNull(), // 'ethereum', 'polygon', 'arbitrum'
   txHash: text('tx_hash').notNull(),
   logIndex: integer('log_index').notNull(),
   blockNumber: integer('block_number').notNull(),
@@ -32,13 +37,14 @@ export const events = sqliteTable('events', {
   toAddress: text('to_address'),
   metadataJson: text('metadata_json'), // JSON blob
 }, (table) => ({
-  // Idempotency constraint
-  txLogUnique: unique().on(table.txHash, table.logIndex),
+  // Idempotency constraint: same tx/log can exist on different chains
+  txLogUnique: unique().on(table.chain, table.txHash, table.logIndex),
 }));
 
 // Pre-computed daily aggregates per token
 export const dailyFlows = sqliteTable('daily_flows', {
   date: text('date').notNull(), // "YYYY-MM-DD"
+  chain: text('chain').notNull(), // 'ethereum', 'polygon', 'arbitrum'
   tokenId: integer('token_id').notNull().references(() => tokens.id),
   totalDeposits: real('total_deposits').notNull().default(0),
   totalWithdrawals: real('total_withdrawals').notNull().default(0),
@@ -46,17 +52,20 @@ export const dailyFlows = sqliteTable('daily_flows', {
   depositTxCount: integer('deposit_tx_count').notNull().default(0),
   withdrawalTxCount: integer('withdrawal_tx_count').notNull().default(0),
 }, (table) => ({
-  pk: primaryKey({ columns: [table.date, table.tokenId] }),
+  pk: primaryKey({ columns: [table.date, table.chain, table.tokenId] }),
 }));
 
 // Pre-computed daily relayer concentration metrics
 export const relayerStatsDaily = sqliteTable('relayer_stats_daily', {
-  date: text('date').primaryKey(), // "YYYY-MM-DD"
+  date: text('date').notNull(), // "YYYY-MM-DD"
+  chain: text('chain').notNull(), // 'ethereum', 'polygon', 'arbitrum'
   numActiveRelayers: integer('num_active_relayers').notNull().default(0),
   top5Share: real('top_5_share').notNull().default(0), // 0-1
   hhi: real('hhi').notNull().default(0), // sum of squared shares
   relayerTxCount: integer('relayer_tx_count').notNull().default(0),
-});
+}, (table) => ({
+  pk: primaryKey({ columns: [table.date, table.chain] }),
+}));
 
 // Type exports for use in application code
 export type Metadata = typeof metadata.$inferSelect;

@@ -1,11 +1,12 @@
 import { createPublicClient, http, erc20Abi, getAddress } from 'viem';
-import { mainnet } from 'viem/chains';
+import { polygon } from 'viem/chains';
 import { db, schema } from '../db/client';
 import { eq, and } from 'drizzle-orm';
-import { RPC_URL } from './config';
+
+const RPC_URL = process.env.POLYGON_RPC_URL || 'https://polygon-mainnet.infura.io/v3/4354acaa8fa44b48b106f9596411a10e';
 
 const client = createPublicClient({
-  chain: mainnet,
+  chain: polygon,
   transport: http(RPC_URL),
 });
 
@@ -20,10 +21,10 @@ export async function resolveTokenId(tokenAddress: string): Promise<number | nul
     return tokenCache.get(checksummed)!;
   }
 
-  // Check database (Ethereum chain)
+  // Check database (Polygon chain)
   const existing = await db.select()
     .from(schema.tokens)
-    .where(and(eq(schema.tokens.address, checksummed), eq(schema.tokens.chain, 'ethereum')))
+    .where(and(eq(schema.tokens.address, checksummed), eq(schema.tokens.chain, 'polygon')))
     .get();
 
   if (existing) {
@@ -57,13 +58,13 @@ export async function resolveTokenId(tokenAddress: string): Promise<number | nul
 
   // Insert with onConflictDoNothing to handle race conditions
   await db.insert(schema.tokens)
-    .values({ chain: 'ethereum', address: checksummed, symbol, decimals })
+    .values({ chain: 'polygon', address: checksummed, symbol, decimals })
     .onConflictDoNothing();
 
   // Query to get the ID (handles both new insert and existing)
   const inserted = await db.select()
     .from(schema.tokens)
-    .where(and(eq(schema.tokens.address, checksummed), eq(schema.tokens.chain, 'ethereum')))
+    .where(and(eq(schema.tokens.address, checksummed), eq(schema.tokens.chain, 'polygon')))
     .get();
 
   if (inserted) {
@@ -77,3 +78,4 @@ export async function resolveTokenId(tokenAddress: string): Promise<number | nul
 export function clearTokenCache() {
   tokenCache.clear();
 }
+

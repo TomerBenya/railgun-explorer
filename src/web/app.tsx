@@ -1,63 +1,155 @@
 import { Hono } from 'hono';
 import { jsxRenderer } from 'hono/jsx-renderer';
 import { db, schema } from '../db/client';
-import { desc, sql, eq } from 'drizzle-orm';
+import { desc, sql, eq, and } from 'drizzle-orm';
+
+type ChainName = 'ethereum' | 'polygon';
+
+function getChainFromQuery(c: any): ChainName {
+  const chain = c.req.query('chain') as string;
+  return (chain === 'polygon' ? 'polygon' : 'ethereum') as ChainName;
+}
+
+function addChainToUrl(url: string, chain: ChainName): string {
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}chain=${chain}`;
+}
 
 const app = new Hono();
 
-// Global layout wrapper
-app.use('*', jsxRenderer(({ children }) => (
-  <html lang="en">
+// Error handling middleware
+app.onError((err, c) => {
+  console.error('Error:', err);
+  console.error('Stack:', err.stack);
+  return c.html(`
+    <!DOCTYPE html>
+    <html>
     <head>
-      <meta charset="UTF-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <title>Railgun Transparency Dashboard</title>
-      <style>{`
-        body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 1rem; }
-        nav { display: flex; gap: 1rem; margin-bottom: 2rem; border-bottom: 1px solid #ccc; padding-bottom: 1rem; }
-        nav a { text-decoration: none; color: #0066cc; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #eee; }
-        th { background: #f5f5f5; }
-        .chart-container { position: relative; height: 400px; margin: 1rem 0; }
-      `}</style>
-      <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+      <title>Error - Railgun Dashboard</title>
+      <style>
+        body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 2rem auto; padding: 1rem; }
+        pre { background: #f5f5f5; padding: 1rem; overflow: auto; border: 1px solid #ddd; }
+      </style>
     </head>
     <body>
-      <header>
-        <h1>Railgun Transparency Dashboard</h1>
-        <nav>
-          <a href="/">Overview</a>
-          <a href="/tokens">Tokens</a>
-          <a href="/relayers">Relayers</a>
-          <a href="/charts">Charts</a>
-          <a href="/ethics">Ethics &amp; Limitations</a>
-        </nav>
-      </header>
-      <main>{children}</main>
-      <footer style={{ marginTop: '2rem', color: '#666', fontSize: '0.875rem' }}>
-        <p>Aggregate analytics only. No individual tracking.</p>
-      </footer>
+      <h1>Error</h1>
+      <p><strong>An error occurred:</strong> ${err.message}</p>
+      <pre>${err.stack || 'No stack trace available'}</pre>
+      <p><a href="/">Go back to homepage</a></p>
     </body>
-  </html>
-)));
+    </html>
+  `);
+});
+
+// Global layout wrapper with network selector
+app.use('*', jsxRenderer(({ children }) => {
+  // Get chain from URL - we'll use client-side JS to handle this
+  // Default to ethereum if not in URL
+  return (
+    <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Railgun Transparency Dashboard</title>
+        <style>{`
+          body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 1rem; }
+          nav { display: flex; gap: 1rem; margin-bottom: 2rem; border-bottom: 1px solid #ccc; padding-bottom: 1rem; align-items: center; }
+          nav a { text-decoration: none; color: #0066cc; }
+          .network-selector { margin-left: auto; display: flex; gap: 0.5rem; align-items: center; }
+          .network-selector label { font-weight: 600; }
+          .network-selector select { padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9rem; cursor: pointer; }
+          table { width: 100%; border-collapse: collapse; }
+          th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #eee; }
+          th { background: #f5f5f5; }
+          .chart-container { position: relative; height: 400px; margin: 1rem 0; }
+          .chain-badge { display: inline-block; padding: 0.25rem 0.5rem; background: #e0e0e0; border-radius: 4px; font-size: 0.85rem; margin-left: 0.5rem; }
+        `}</style>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script dangerouslySetInnerHTML={{ __html: `
+          // Get chain from URL params
+          const urlParams = new URLSearchParams(window.location.search);
+          const currentChain = urlParams.get('chain') || 'ethereum';
+          document.currentChain = currentChain;
+        `}} />
+      </head>
+      <body>
+        <header>
+          <h1>Railgun Transparency Dashboard</h1>
+          <nav>
+            <a href="/?chain=ethereum" id="nav-overview">Overview</a>
+            <a href="/tokens?chain=ethereum" id="nav-tokens">Tokens</a>
+            <a href="/relayers?chain=ethereum" id="nav-relayers">Relayers</a>
+            <a href="/charts?chain=ethereum" id="nav-charts">Charts</a>
+            <a href="/ethics?chain=ethereum" id="nav-ethics">Ethics &amp; Limitations</a>
+            <div class="network-selector">
+              <label for="chain-select">Network:</label>
+              <select id="chain-select">
+                <option value="ethereum">Ethereum</option>
+                <option value="polygon">Polygon</option>
+              </select>
+            </div>
+          </nav>
+        </header>
+        <main>{children}</main>
+        <footer style={{ marginTop: '2rem', color: '#666', fontSize: '0.875rem' }}>
+          <p>Aggregate analytics only. No individual tracking.</p>
+        </footer>
+        <script dangerouslySetInnerHTML={{ __html: `
+          (function() {
+            // Get chain from URL params
+            const urlParams = new URLSearchParams(window.location.search);
+            let currentChain = urlParams.get('chain') || 'ethereum';
+            
+            // Update select value
+            const select = document.getElementById('chain-select');
+            if (select) {
+              select.value = currentChain;
+              
+              // Handle network change
+              select.addEventListener('change', function() {
+                const newChain = this.value;
+                const url = new URL(window.location);
+                url.searchParams.set('chain', newChain);
+                window.location.href = url.toString();
+              });
+            }
+            
+            // Update all nav links with current chain
+            const pages = ['overview', 'tokens', 'relayers', 'charts', 'ethics'];
+            pages.forEach(page => {
+              const link = document.getElementById('nav-' + page);
+              if (link) {
+                const currentHref = link.getAttribute('href');
+                const basePath = currentHref.split('?')[0];
+                link.setAttribute('href', basePath + '?chain=' + currentChain);
+              }
+            });
+          })();
+        `}} />
+      </body>
+    </html>
+  );
+}));
 
 // GET / - Overview page
 app.get('/', async (c) => {
-  const flows = await db.select({
-    date: schema.dailyFlows.date,
-    totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
-    totalWithdrawals: sql<number>`sum(${schema.dailyFlows.totalWithdrawals})`,
-    netFlow: sql<number>`sum(${schema.dailyFlows.netFlow})`,
-  })
-    .from(schema.dailyFlows)
-    .groupBy(schema.dailyFlows.date)
-    .orderBy(desc(schema.dailyFlows.date))
-    .limit(30);
+  try {
+    const chain = getChainFromQuery(c);
+    const flows = await db.select({
+      date: schema.dailyFlows.date,
+      totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
+      totalWithdrawals: sql<number>`sum(${schema.dailyFlows.totalWithdrawals})`,
+      netFlow: sql<number>`sum(${schema.dailyFlows.netFlow})`,
+    })
+      .from(schema.dailyFlows)
+      .where(eq(schema.dailyFlows.chain, chain))
+      .groupBy(schema.dailyFlows.date)
+      .orderBy(desc(schema.dailyFlows.date))
+      .limit(30);
 
-  return c.render(
+    return c.render(
     <section>
-      <h2>Daily Overview (All Tokens)</h2>
+      <h2>Daily Overview (All Tokens) <span class="chain-badge">{chain.charAt(0).toUpperCase() + chain.slice(1)}</span></h2>
       <table>
         <thead>
           <tr><th>Date</th><th>Deposits</th><th>Withdrawals</th><th>Net Flow</th></tr>
@@ -78,11 +170,16 @@ app.get('/', async (c) => {
         </tbody>
       </table>
     </section>
-  );
+    );
+  } catch (error) {
+    console.error('Error in / route:', error);
+    throw error; // Let error handler catch it
+  }
 });
 
 // GET /tokens - Token list
 app.get('/tokens', async (c) => {
+  const chain = getChainFromQuery(c);
   const tokenStats = await db.select({
     id: schema.tokens.id,
     symbol: schema.tokens.symbol,
@@ -90,13 +187,17 @@ app.get('/tokens', async (c) => {
     totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
   })
     .from(schema.tokens)
-    .leftJoin(schema.dailyFlows, eq(schema.tokens.id, schema.dailyFlows.tokenId))
+    .leftJoin(schema.dailyFlows, and(
+      eq(schema.tokens.id, schema.dailyFlows.tokenId),
+      eq(schema.dailyFlows.chain, chain)
+    ))
+    .where(eq(schema.tokens.chain, chain))
     .groupBy(schema.tokens.id)
     .orderBy(desc(sql`sum(${schema.dailyFlows.totalDeposits})`));
 
   return c.render(
     <section>
-      <h2>Tokens by Deposit Volume</h2>
+      <h2>Tokens by Deposit Volume <span class="chain-badge">{chain.charAt(0).toUpperCase() + chain.slice(1)}</span></h2>
       <table>
         <thead>
           <tr><th>Symbol</th><th>Total Deposits</th><th>Details</th></tr>
@@ -121,17 +222,24 @@ app.get('/tokens', async (c) => {
 
 // GET /tokens/:id - Token detail
 app.get('/tokens/:id', async (c) => {
+  const chain = getChainFromQuery(c);
   const tokenId = parseInt(c.req.param('id'));
-  const token = await db.select().from(schema.tokens).where(eq(schema.tokens.id, tokenId)).get();
+  const token = await db.select()
+    .from(schema.tokens)
+    .where(and(eq(schema.tokens.id, tokenId), eq(schema.tokens.chain, chain)))
+    .get();
   const flows = await db.select()
     .from(schema.dailyFlows)
-    .where(eq(schema.dailyFlows.tokenId, tokenId))
+    .where(and(
+      eq(schema.dailyFlows.tokenId, tokenId),
+      eq(schema.dailyFlows.chain, chain)
+    ))
     .orderBy(desc(schema.dailyFlows.date))
     .limit(30);
 
   return c.render(
     <section>
-      <h2>{token?.symbol || 'Token'} Daily Flows</h2>
+      <h2>{token?.symbol || 'Token'} Daily Flows <span class="chain-badge">{chain.charAt(0).toUpperCase() + chain.slice(1)}</span></h2>
       <table>
         <thead>
           <tr><th>Date</th><th>Deposits</th><th>Withdrawals</th><th>Net</th></tr>
@@ -157,14 +265,16 @@ app.get('/tokens/:id', async (c) => {
 
 // GET /relayers - Relayer concentration metrics
 app.get('/relayers', async (c) => {
+  const chain = getChainFromQuery(c);
   const stats = await db.select()
     .from(schema.relayerStatsDaily)
+    .where(eq(schema.relayerStatsDaily.chain, chain))
     .orderBy(desc(schema.relayerStatsDaily.date))
     .limit(30);
 
   return c.render(
     <section>
-      <h2>Relayer Concentration Metrics</h2>
+      <h2>Relayer Concentration Metrics <span class="chain-badge">{chain.charAt(0).toUpperCase() + chain.slice(1)}</span></h2>
       <p><em>Aggregate statistics only. No individual relayer data exposed.</em></p>
       <table>
         <thead>
@@ -234,7 +344,7 @@ app.get('/ethics', (c) => {
     <section>
       <h2>Ethics &amp; Limitations</h2>
       <h3>Data Sources</h3>
-      <p>This dashboard indexes only public on-chain events from Railgun smart contracts on Ethereum mainnet.</p>
+      <p>This dashboard indexes only public on-chain events from Railgun smart contracts on Ethereum mainnet and Polygon.</p>
 
       <h3>What We Do NOT Do</h3>
       <ul>
@@ -264,6 +374,7 @@ app.get('/ethics', (c) => {
 
 // GET /charts - Charts dashboard with Chart.js
 app.get('/charts', async (c) => {
+  const chain = getChainFromQuery(c);
   // Fetch daily flows for the chart (last 30 days)
   const flows = await db.select({
     date: schema.dailyFlows.date,
@@ -271,6 +382,7 @@ app.get('/charts', async (c) => {
     totalWithdrawals: sql<number>`sum(${schema.dailyFlows.totalWithdrawals})`,
   })
     .from(schema.dailyFlows)
+    .where(eq(schema.dailyFlows.chain, chain))
     .groupBy(schema.dailyFlows.date)
     .orderBy(schema.dailyFlows.date)
     .limit(30);
@@ -284,7 +396,7 @@ app.get('/charts', async (c) => {
 
   return c.render(
     <section>
-      <h2>Charts Dashboard</h2>
+      <h2>Charts Dashboard <span class="chain-badge">{chain.charAt(0).toUpperCase() + chain.slice(1)}</span></h2>
       <p>Visual analytics for Railgun aggregate flows.</p>
 
       <h3>Daily Deposits vs Withdrawals</h3>

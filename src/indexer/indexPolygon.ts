@@ -1,20 +1,22 @@
 import { createPublicClient, http } from 'viem';
-import { mainnet } from 'viem/chains';
+import { polygon } from 'viem/chains';
 import { db, schema } from '../db/client';
 import { eq } from 'drizzle-orm';
 import {
   RPC_URL, START_BLOCK, CONFIRMATION_BLOCKS, BATCH_SIZE,
   CONTRACTS,
-} from './config';
+} from './configPolygon';
 import { decodeSmartWalletEvent, decodeRelayEvent } from './eventDecoder';
-import { resolveTokenId, clearTokenCache } from './tokenResolver';
+import { RELAY_ABI } from './configPolygon';
+import { resolveTokenId, clearTokenCache } from './tokenResolverPolygon';
 
 const MAX_RETRIES = 5;
 const RETRY_DELAY_MS = 5000;
-const BATCH_DELAY_MS = parseInt(process.env.BATCH_DELAY_MS || '2000'); // Delay between batches to avoid rate limits
+const BATCH_DELAY_MS = parseInt(process.env.BATCH_DELAY_MS || '5000'); // Increased default delay to avoid rate limits
+const RATE_LIMIT_DELAY_MS = 30000; // 30 seconds for rate limit errors
 
 const client = createPublicClient({
-  chain: mainnet,
+  chain: polygon,
   transport: http(RPC_URL),
 });
 
@@ -29,9 +31,16 @@ async function withRetry<T>(fn: () => Promise<T>, context: string): Promise<T> {
       return await fn();
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
+      const errorMsg = lastError.message.toLowerCase();
+      const isRateLimit = errorMsg.includes('429') || errorMsg.includes('rate limit') || errorMsg.includes('too many requests');
+      
       console.warn(`${context} failed (attempt ${attempt}/${MAX_RETRIES}): ${lastError.message}`);
+      
       if (attempt < MAX_RETRIES) {
-        await sleep(RETRY_DELAY_MS * attempt);
+        // Use longer delay for rate limit errors
+        const delay = isRateLimit ? RATE_LIMIT_DELAY_MS * attempt : RETRY_DELAY_MS * attempt;
+        console.log(`  Waiting ${delay}ms before retry...`);
+        await sleep(delay);
       }
     }
   }
@@ -41,14 +50,14 @@ async function withRetry<T>(fn: () => Promise<T>, context: string): Promise<T> {
 async function getLastIndexedBlock(): Promise<bigint> {
   const row = await db.select()
     .from(schema.metadata)
-    .where(eq(schema.metadata.key, 'last_indexed_block_eth'))
+    .where(eq(schema.metadata.key, 'last_indexed_block_polygon'))
     .get();
   return row?.value ? BigInt(row.value) : START_BLOCK;
 }
 
 async function setLastIndexedBlock(block: bigint): Promise<void> {
   await db.insert(schema.metadata)
-    .values({ key: 'last_indexed_block_eth', value: block.toString() })
+    .values({ key: 'last_indexed_block_polygon', value: block.toString() })
     .onConflictDoUpdate({
       target: schema.metadata.key,
       set: { value: block.toString() },
@@ -133,7 +142,7 @@ async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
       // Insert event (idempotent) - use logIndex + sub-index for multiple events per log
       await db.insert(schema.events)
         .values({
-          chain: 'ethereum',
+          chain: 'polygon',
           txHash: log.transactionHash,
           logIndex: log.logIndex * 100 + i, // Sub-index for multiple events per log
           blockNumber: Number(log.blockNumber),
@@ -157,7 +166,7 @@ async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
 
   // Process Relay events (Shield/Unshield)
   for (const log of relayLogs) {
-    const decodedEvents = decodeRelayEvent(log);
+    const decodedEvents = decodeRelayEvent(log, RELAY_ABI);
     if (decodedEvents.length === 0) continue;
 
     if (!timestamps.has(log.blockNumber)) {
@@ -191,7 +200,7 @@ async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
 
       await db.insert(schema.events)
         .values({
-          chain: 'ethereum',
+          chain: 'polygon',
           txHash: log.transactionHash,
           logIndex: log.logIndex * 100 + i,
           blockNumber: Number(log.blockNumber),
@@ -217,7 +226,7 @@ async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
 }
 
 async function main() {
-  console.log('Starting Ethereum indexer...');
+  console.log('Starting Polygon indexer...');
 
   const latestBlock = await withRetry(
     () => client.getBlockNumber(),
@@ -255,3 +264,4 @@ async function main() {
 }
 
 main().catch(console.error);
+
