@@ -6,12 +6,11 @@ export const RPC_URL = process.env.POLYGON_RPC_URL || 'https://polygon-mainnet.i
 
 // Start block - Skip to where events actually exist
 // SmartWallet deployed at 23,580,067, Relay at 28,062,088
-// But first actual events appear around block 73,277,115
-// Starting from Relay deployment to catch all potential events
+// But first actual Unshield events appear around block 73,900,000
 // Can be overridden via POLYGON_START_BLOCK env var
 export const START_BLOCK = process.env.POLYGON_START_BLOCK
   ? BigInt(process.env.POLYGON_START_BLOCK)
-  : 28_062_088n; // Relay contract creation block
+  : 73_800_000n; // Just before first real events
 
 // Indexer settings
 export const CONFIRMATION_BLOCKS = 12n;

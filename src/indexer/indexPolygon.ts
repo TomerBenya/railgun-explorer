@@ -31,12 +31,18 @@ async function withRetry<T>(fn: () => Promise<T>, context: string): Promise<T> {
       lastError = err instanceof Error ? err : new Error(String(err));
       const errorMsg = lastError.message.toLowerCase();
       const isRateLimit = errorMsg.includes('429') || errorMsg.includes('rate limit') || errorMsg.includes('too many requests');
-      
+      const isSqliteBusy = errorMsg.includes('sqlite_busy') || errorMsg.includes('database is locked');
+
       console.warn(`${context} failed (attempt ${attempt}/${MAX_RETRIES}): ${lastError.message}`);
-      
+
       if (attempt < MAX_RETRIES) {
-        // Use longer delay for rate limit errors
-        const delay = isRateLimit ? RATE_LIMIT_DELAY_MS * attempt : RETRY_DELAY_MS * attempt;
+        // Use longer delay for rate limit errors and SQLite busy errors
+        let delay = RETRY_DELAY_MS * attempt;
+        if (isRateLimit) {
+          delay = RATE_LIMIT_DELAY_MS * attempt;
+        } else if (isSqliteBusy) {
+          delay = 10000 * attempt; // 10s, 20s, 30s, 40s for SQLite busy
+        }
         console.log(`  Waiting ${delay}ms before retry...`);
         await sleep(delay);
       }
@@ -107,7 +113,8 @@ async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
   // Transaction sender cache for this batch (for relayer identification)
   const txSenders = new Map<string, string | null>();
 
-  let totalDecoded = 0;
+  // Collect all events to insert in a single transaction
+  const eventsToInsert: schema.NewEvent[] = [];
 
   // Process SmartWallet events (currently no events from this contract)
   for (const log of smartWalletLogs) {
@@ -137,28 +144,23 @@ async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
         }
       }
 
-      // Insert event (idempotent) - use logIndex + sub-index for multiple events per log
-      await db.insert(schema.events)
-        .values({
-          chain: 'polygon',
-          txHash: log.transactionHash,
-          logIndex: log.logIndex * 100 + i, // Sub-index for multiple events per log
-          blockNumber: Number(log.blockNumber),
-          blockTimestamp: timestamps.get(log.blockNumber)!,
-          contractName: 'SmartWallet',
-          eventName: decoded.eventName,
-          eventType: decoded.eventType,
-          tokenId,
-          rawAmountWei: decoded.rawAmountWei,
-          amountNormalized,
-          relayerAddress: decoded.relayerAddress,
-          fromAddress: decoded.fromAddress,
-          toAddress: decoded.toAddress,
-          metadataJson: JSON.stringify(decoded.metadata),
-        })
-        .onConflictDoNothing();
-
-      totalDecoded++;
+      eventsToInsert.push({
+        chain: 'polygon',
+        txHash: log.transactionHash,
+        logIndex: log.logIndex * 100 + i, // Sub-index for multiple events per log
+        blockNumber: Number(log.blockNumber),
+        blockTimestamp: timestamps.get(log.blockNumber)!,
+        contractName: 'SmartWallet',
+        eventName: decoded.eventName,
+        eventType: decoded.eventType,
+        tokenId,
+        rawAmountWei: decoded.rawAmountWei,
+        amountNormalized,
+        relayerAddress: decoded.relayerAddress,
+        fromAddress: decoded.fromAddress,
+        toAddress: decoded.toAddress,
+        metadataJson: JSON.stringify(decoded.metadata),
+      });
     }
   }
 
@@ -196,31 +198,44 @@ async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
         relayerAddress = txSenders.get(txHash) || null;
       }
 
-      await db.insert(schema.events)
-        .values({
-          chain: 'polygon',
-          txHash: log.transactionHash,
-          logIndex: log.logIndex * 100 + i,
-          blockNumber: Number(log.blockNumber),
-          blockTimestamp: timestamps.get(log.blockNumber)!,
-          contractName: 'Relay',
-          eventName: decoded.eventName,
-          eventType: decoded.eventType,
-          tokenId,
-          rawAmountWei: decoded.rawAmountWei,
-          amountNormalized,
-          relayerAddress,
-          fromAddress: decoded.fromAddress,
-          toAddress: decoded.toAddress,
-          metadataJson: JSON.stringify(decoded.metadata),
-        })
-        .onConflictDoNothing();
-
-      totalDecoded++;
+      eventsToInsert.push({
+        chain: 'polygon',
+        txHash: log.transactionHash,
+        logIndex: log.logIndex * 100 + i,
+        blockNumber: Number(log.blockNumber),
+        blockTimestamp: timestamps.get(log.blockNumber)!,
+        contractName: 'Relay',
+        eventName: decoded.eventName,
+        eventType: decoded.eventType,
+        tokenId,
+        rawAmountWei: decoded.rawAmountWei,
+        amountNormalized,
+        relayerAddress,
+        fromAddress: decoded.fromAddress,
+        toAddress: decoded.toAddress,
+        metadataJson: JSON.stringify(decoded.metadata),
+      });
     }
   }
 
-  console.log(`  Processed: SmartWallet=${smartWalletLogs.length}, Relay=${relayLogs.length}, Decoded=${totalDecoded}`);
+  // Insert all events in a single transaction (reduces lock contention)
+  if (eventsToInsert.length > 0) {
+    await withRetry(
+      async () => {
+        await db.transaction(async (tx) => {
+          // Insert in chunks of 100 to avoid SQLite variable limits
+          const CHUNK_SIZE = 100;
+          for (let i = 0; i < eventsToInsert.length; i += CHUNK_SIZE) {
+            const chunk = eventsToInsert.slice(i, i + CHUNK_SIZE);
+            await tx.insert(schema.events).values(chunk).onConflictDoNothing();
+          }
+        });
+      },
+      `insert ${eventsToInsert.length} events`
+    );
+  }
+
+  console.log(`  Processed: SmartWallet=${smartWalletLogs.length}, Relay=${relayLogs.length}, Decoded=${eventsToInsert.length}`);
 }
 
 async function main() {

@@ -19,6 +19,10 @@ const sqlite = new Database(DB_PATH, { create: true });
 
 // Enable WAL mode for better concurrent read performance
 sqlite.exec('PRAGMA journal_mode = WAL');
+// Wait up to 30 seconds for locks to be released before failing
+sqlite.exec('PRAGMA busy_timeout = 30000');
+// Synchronous mode: NORMAL is a good balance between safety and speed
+sqlite.exec('PRAGMA synchronous = NORMAL');
 
 export const db = drizzle(sqlite, { schema });
 export { schema };
