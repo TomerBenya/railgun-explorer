@@ -208,68 +208,57 @@ export function decodeRelayEvent(log: Log, abi?: Abi): DecodedEvent[] {
     }
     
     // Handle Polygon Shield (signature 0x4be10945...)
-    // Polygon Shield structure: bytes32 treeHash (32 bytes), offset (32 bytes), then arrays
-    // Token address appears at position 130-170 in hex string (after first 64 bytes)
-    if (eventSig === POLYGON_EVENT_SIGNATURES.SHIELD.toLowerCase() && log.data && log.data.length > 200) {
+    // Polygon Shield wraps an ERC20 transfer call with this structure:
+    // - bytes32 commitment hash (32 bytes)
+    // - uint256 offset (32 bytes)
+    // - address token padded (32 bytes) <- token at position 128-192 after 0x
+    // - uint256 offset (32 bytes)
+    // - zeros (64 bytes)
+    // - uint256 calldata length (32 bytes)
+    // - bytes4 transfer selector (4 bytes)
+    // - address recipient padded (32 bytes)
+    // - uint256 amount (32 bytes) <- amount at position 520-584 after 0x
+    if (eventSig === POLYGON_EVENT_SIGNATURES.SHIELD.toLowerCase() && log.data && log.data.length >= 586) {
       try {
         const data = log.data;
-        
-        // Extract token address from position 130-170 (bytes 65-85, which is hex chars 130-170)
-        // This is the third 32-byte chunk, which contains the padded token address
+
+        // Extract token address from position 128-192 (third 32-byte chunk, padded address)
+        // Format: 24 zeros + 40 hex chars of address
+        const tokenChunk = data.substring(2 + 128, 2 + 192); // Skip "0x" prefix
         let tokenAddress: string | null = null;
-        
-        // Try positions where token address might appear (after treeHash + offset)
-        // Position 130 is after 64 bytes (128 hex chars) + 2 for '0x' = 130
-        const positions = [130, 106, 90, 154, 170];
-        for (const pos of positions) {
-          if (pos + 64 <= data.length) {
-            // Get the 32-byte chunk (64 hex chars)
-            const chunk = data.substring(pos, pos + 64);
-            // Token address is padded: 24 hex chars of zeros + 40 hex chars of address
-            if (chunk.startsWith('000000000000000000000000')) {
-              const addr = '0x' + chunk.substring(24, 64); // Extract last 40 hex chars
-              // Validate it's a proper address
-              if (addr.length === 42 && /^0x[a-fA-F0-9]{40}$/.test(addr) && addr !== '0x0000000000000000000000000000000000000000') {
-                tokenAddress = addr;
-                break;
-              }
-            }
+
+        if (tokenChunk.startsWith('000000000000000000000000')) {
+          const addr = '0x' + tokenChunk.substring(24); // Last 40 hex chars
+          if (addr.length === 42 && /^0x[a-fA-F0-9]{40}$/i.test(addr) &&
+              addr.toLowerCase() !== '0x0000000000000000000000000000000000000000') {
+            tokenAddress = addr;
           }
         }
-        
-        // If not found at expected positions, search the entire data for padded addresses
-        if (!tokenAddress) {
-          for (let i = 2; i < data.length - 64; i += 2) {
-            const chunk = data.substring(i, i + 64);
-            if (chunk.startsWith('000000000000000000000000')) {
-              const addr = '0x' + chunk.substring(24, 64);
-              if (addr.length === 42 && /^0x[a-fA-F0-9]{40}$/.test(addr) && addr !== '0x0000000000000000000000000000000000000000') {
-                tokenAddress = addr;
-                break;
-              }
-            }
-          }
+
+        // Extract amount from position 520-584 (last 32-byte value in the transfer call)
+        let rawAmountWei = '0';
+        if (data.length >= 2 + 584) {
+          const amountHex = data.substring(2 + 520, 2 + 584);
+          // Parse as BigInt and convert to string
+          const amountBigInt = BigInt('0x' + amountHex);
+          rawAmountWei = amountBigInt.toString();
         }
-        
-        // If we found a token, create a deposit event
-        // Note: Amount extraction is complex due to array structure, so we'll set it to 0 for now
-        // The analytics will still count the transaction
+
         if (tokenAddress) {
           return [{
             eventName: 'Shield',
             eventType: 'deposit',
             tokenAddress,
-            rawAmountWei: '0', // Amount extraction from array structure not yet implemented
+            rawAmountWei,
             relayerAddress: null,
             fromAddress: null,
             toAddress: null,
             metadata: {
-              note: 'Polygon Shield - amount set to 0, structure too complex',
               blockNumber: log.blockNumber.toString(),
             },
           }];
         }
-        
+
         // If we can't extract token, skip
         console.warn(`[decodeRelayEvent] Polygon Shield at block ${log.blockNumber} - could not extract token address`);
         return [];
