@@ -1,5 +1,6 @@
 import { migrate } from 'drizzle-orm/bun-sqlite/migrator';
-import { db } from './db/client';
+import { db, schema } from './db/client';
+import { eq } from 'drizzle-orm';
 import { resolve, dirname } from 'path';
 
 // Run migrations on startup
@@ -7,6 +8,28 @@ const migrationsFolder = resolve(dirname(import.meta.path), '../drizzle');
 console.log('Running migrations...');
 migrate(db, { migrationsFolder });
 console.log('Migrations complete.');
+
+// One-time data migration: Reset Polygon events to re-index with fixed decoder
+// This runs once and sets a flag in metadata to prevent re-running
+const POLYGON_RESET_KEY = 'polygon_events_reset_v1';
+const resetCheck = db.select().from(schema.metadata).where(eq(schema.metadata.key, POLYGON_RESET_KEY)).get();
+
+if (!resetCheck) {
+  console.log('[Migration] Resetting Polygon events for decoder fix...');
+
+  // Delete all Polygon events (they'll be re-indexed with correct amounts)
+  db.delete(schema.events).where(eq(schema.events.chain, 'polygon')).run();
+
+  // Reset Polygon indexer position
+  db.delete(schema.metadata).where(eq(schema.metadata.key, 'last_indexed_block_polygon')).run();
+
+  // Mark migration as complete
+  db.insert(schema.metadata).values({ key: POLYGON_RESET_KEY, value: new Date().toISOString() }).run();
+
+  console.log('[Migration] Polygon events cleared. Indexer will re-fetch with fixed decoder.');
+} else {
+  console.log('[Migration] Polygon reset already applied, skipping.');
+}
 
 // Import app after migrations
 const { default: app } = await import('./web/app');

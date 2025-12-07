@@ -87,6 +87,7 @@ app.use('*', jsxRenderer(({ children }) => {
             <a href="/tokens?chain=ethereum" id="nav-tokens">Tokens</a>
             <a href="/relayers?chain=ethereum" id="nav-relayers">Relayers</a>
             <a href="/charts?chain=ethereum" id="nav-charts">Charts</a>
+            <a href="/export?chain=ethereum" id="nav-export">Export</a>
             <a href="/ethics?chain=ethereum" id="nav-ethics">Ethics &amp; Limitations</a>
             <div class="network-selector">
               <label for="chain-select">Network:</label>
@@ -123,7 +124,7 @@ app.use('*', jsxRenderer(({ children }) => {
             }
             
             // Update all nav links with current chain
-            const pages = ['overview', 'tokens', 'relayers', 'charts', 'ethics'];
+            const pages = ['overview', 'tokens', 'relayers', 'charts', 'export', 'ethics'];
             pages.forEach(page => {
               const link = document.getElementById('nav-' + page);
               if (link) {
@@ -466,6 +467,130 @@ app.get('/ethics', (c) => {
         <li>Token metadata relies on on-chain calls which may fail for non-standard tokens</li>
         <li>Aggregate volumes are approximations based on decoded event data</li>
       </ul>
+    </section>
+  );
+});
+
+// GET /export/daily-flows.csv - Export daily flows as CSV
+app.get('/export/daily-flows.csv', async (c) => {
+  const chain = getChainFromQuery(c);
+
+  const flows = chain === 'all'
+    ? await db.select({
+        date: schema.dailyFlows.date,
+        chain: schema.dailyFlows.chain,
+        tokenId: schema.dailyFlows.tokenId,
+        symbol: schema.tokens.symbol,
+        totalDeposits: schema.dailyFlows.totalDeposits,
+        totalWithdrawals: schema.dailyFlows.totalWithdrawals,
+        netFlow: schema.dailyFlows.netFlow,
+        depositTxCount: schema.dailyFlows.depositTxCount,
+        withdrawalTxCount: schema.dailyFlows.withdrawalTxCount,
+      })
+        .from(schema.dailyFlows)
+        .leftJoin(schema.tokens, eq(schema.dailyFlows.tokenId, schema.tokens.id))
+        .orderBy(desc(schema.dailyFlows.date))
+    : await db.select({
+        date: schema.dailyFlows.date,
+        chain: schema.dailyFlows.chain,
+        tokenId: schema.dailyFlows.tokenId,
+        symbol: schema.tokens.symbol,
+        totalDeposits: schema.dailyFlows.totalDeposits,
+        totalWithdrawals: schema.dailyFlows.totalWithdrawals,
+        netFlow: schema.dailyFlows.netFlow,
+        depositTxCount: schema.dailyFlows.depositTxCount,
+        withdrawalTxCount: schema.dailyFlows.withdrawalTxCount,
+      })
+        .from(schema.dailyFlows)
+        .leftJoin(schema.tokens, eq(schema.dailyFlows.tokenId, schema.tokens.id))
+        .where(eq(schema.dailyFlows.chain, chain))
+        .orderBy(desc(schema.dailyFlows.date));
+
+  const headers = ['date', 'chain', 'token_id', 'symbol', 'total_deposits', 'total_withdrawals', 'net_flow', 'deposit_tx_count', 'withdrawal_tx_count'];
+  const rows = flows.map(row => [
+    row.date,
+    row.chain,
+    row.tokenId,
+    row.symbol || '',
+    row.totalDeposits,
+    row.totalWithdrawals,
+    row.netFlow,
+    row.depositTxCount,
+    row.withdrawalTxCount,
+  ].join(','));
+
+  const csv = [headers.join(','), ...rows].join('\n');
+
+  return new Response(csv, {
+    headers: {
+      'Content-Type': 'text/csv',
+      'Content-Disposition': `attachment; filename="daily-flows-${chain}.csv"`,
+    },
+  });
+});
+
+// GET /export/relayer-stats.csv - Export relayer stats as CSV
+app.get('/export/relayer-stats.csv', async (c) => {
+  const chain = getChainFromQuery(c);
+
+  const stats = chain === 'all'
+    ? await db.select()
+        .from(schema.relayerStatsDaily)
+        .orderBy(desc(schema.relayerStatsDaily.date))
+    : await db.select()
+        .from(schema.relayerStatsDaily)
+        .where(eq(schema.relayerStatsDaily.chain, chain))
+        .orderBy(desc(schema.relayerStatsDaily.date));
+
+  const headers = ['date', 'chain', 'num_active_relayers', 'top_5_share', 'hhi', 'relayer_tx_count'];
+  const rows = stats.map(row => [
+    row.date,
+    row.chain,
+    row.numActiveRelayers,
+    row.top5Share,
+    row.hhi,
+    row.relayerTxCount,
+  ].join(','));
+
+  const csv = [headers.join(','), ...rows].join('\n');
+
+  return new Response(csv, {
+    headers: {
+      'Content-Type': 'text/csv',
+      'Content-Disposition': `attachment; filename="relayer-stats-${chain}.csv"`,
+    },
+  });
+});
+
+// GET /export - Export page with download links
+app.get('/export', (c) => {
+  const chain = getChainFromQuery(c);
+  return c.render(
+    <section>
+      <h2>Export Data <span class="chain-badge">{getChainLabel(chain)}</span></h2>
+      <p>Download aggregate data as CSV files. Only aggregate metrics are available - no individual transaction or address data.</p>
+
+      <h3>Available Downloads</h3>
+      <table>
+        <thead>
+          <tr><th>Dataset</th><th>Description</th><th>Download</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Daily Flows</td>
+            <td>Daily deposit/withdrawal volumes per token</td>
+            <td><a href={`/export/daily-flows.csv?chain=${chain}`}>Download CSV</a></td>
+          </tr>
+          <tr>
+            <td>Relayer Stats</td>
+            <td>Daily relayer concentration metrics (aggregate only)</td>
+            <td><a href={`/export/relayer-stats.csv?chain=${chain}`}>Download CSV</a></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Privacy Note</h3>
+      <p><em>Raw event data with addresses is not available for export. Only pre-computed aggregate statistics are provided to preserve user privacy.</em></p>
     </section>
   );
 });
