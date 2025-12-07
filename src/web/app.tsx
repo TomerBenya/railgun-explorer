@@ -562,35 +562,176 @@ app.get('/export/relayer-stats.csv', async (c) => {
   });
 });
 
+// GET /export/events.json - Export raw events as JSON
+app.get('/export/events.json', async (c) => {
+  const chain = getChainFromQuery(c);
+
+  const events = chain === 'all'
+    ? await db.select({
+        id: schema.events.id,
+        chain: schema.events.chain,
+        txHash: schema.events.txHash,
+        logIndex: schema.events.logIndex,
+        blockNumber: schema.events.blockNumber,
+        blockTimestamp: schema.events.blockTimestamp,
+        contractName: schema.events.contractName,
+        eventName: schema.events.eventName,
+        eventType: schema.events.eventType,
+        tokenSymbol: schema.tokens.symbol,
+        tokenAddress: schema.tokens.address,
+        rawAmountWei: schema.events.rawAmountWei,
+        amountNormalized: schema.events.amountNormalized,
+        relayerAddress: schema.events.relayerAddress,
+        fromAddress: schema.events.fromAddress,
+        toAddress: schema.events.toAddress,
+      })
+        .from(schema.events)
+        .leftJoin(schema.tokens, eq(schema.events.tokenId, schema.tokens.id))
+        .orderBy(desc(schema.events.blockNumber))
+    : await db.select({
+        id: schema.events.id,
+        chain: schema.events.chain,
+        txHash: schema.events.txHash,
+        logIndex: schema.events.logIndex,
+        blockNumber: schema.events.blockNumber,
+        blockTimestamp: schema.events.blockTimestamp,
+        contractName: schema.events.contractName,
+        eventName: schema.events.eventName,
+        eventType: schema.events.eventType,
+        tokenSymbol: schema.tokens.symbol,
+        tokenAddress: schema.tokens.address,
+        rawAmountWei: schema.events.rawAmountWei,
+        amountNormalized: schema.events.amountNormalized,
+        relayerAddress: schema.events.relayerAddress,
+        fromAddress: schema.events.fromAddress,
+        toAddress: schema.events.toAddress,
+      })
+        .from(schema.events)
+        .leftJoin(schema.tokens, eq(schema.events.tokenId, schema.tokens.id))
+        .where(eq(schema.events.chain, chain))
+        .orderBy(desc(schema.events.blockNumber));
+
+  return new Response(JSON.stringify(events, null, 2), {
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Disposition': `attachment; filename="events-${chain}.json"`,
+    },
+  });
+});
+
+// GET /export/events.csv - Export raw events as CSV
+app.get('/export/events.csv', async (c) => {
+  const chain = getChainFromQuery(c);
+
+  const events = chain === 'all'
+    ? await db.select({
+        id: schema.events.id,
+        chain: schema.events.chain,
+        txHash: schema.events.txHash,
+        logIndex: schema.events.logIndex,
+        blockNumber: schema.events.blockNumber,
+        blockTimestamp: schema.events.blockTimestamp,
+        contractName: schema.events.contractName,
+        eventName: schema.events.eventName,
+        eventType: schema.events.eventType,
+        tokenSymbol: schema.tokens.symbol,
+        tokenAddress: schema.tokens.address,
+        rawAmountWei: schema.events.rawAmountWei,
+        amountNormalized: schema.events.amountNormalized,
+        relayerAddress: schema.events.relayerAddress,
+        fromAddress: schema.events.fromAddress,
+        toAddress: schema.events.toAddress,
+      })
+        .from(schema.events)
+        .leftJoin(schema.tokens, eq(schema.events.tokenId, schema.tokens.id))
+        .orderBy(desc(schema.events.blockNumber))
+    : await db.select({
+        id: schema.events.id,
+        chain: schema.events.chain,
+        txHash: schema.events.txHash,
+        logIndex: schema.events.logIndex,
+        blockNumber: schema.events.blockNumber,
+        blockTimestamp: schema.events.blockTimestamp,
+        contractName: schema.events.contractName,
+        eventName: schema.events.eventName,
+        eventType: schema.events.eventType,
+        tokenSymbol: schema.tokens.symbol,
+        tokenAddress: schema.tokens.address,
+        rawAmountWei: schema.events.rawAmountWei,
+        amountNormalized: schema.events.amountNormalized,
+        relayerAddress: schema.events.relayerAddress,
+        fromAddress: schema.events.fromAddress,
+        toAddress: schema.events.toAddress,
+      })
+        .from(schema.events)
+        .leftJoin(schema.tokens, eq(schema.events.tokenId, schema.tokens.id))
+        .where(eq(schema.events.chain, chain))
+        .orderBy(desc(schema.events.blockNumber));
+
+  const headers = ['id', 'chain', 'tx_hash', 'log_index', 'block_number', 'block_timestamp', 'contract_name', 'event_name', 'event_type', 'token_symbol', 'token_address', 'raw_amount_wei', 'amount_normalized', 'relayer_address', 'from_address', 'to_address'];
+  const rows = events.map(row => [
+    row.id,
+    row.chain,
+    row.txHash,
+    row.logIndex,
+    row.blockNumber,
+    row.blockTimestamp,
+    row.contractName,
+    row.eventName,
+    row.eventType,
+    row.tokenSymbol || '',
+    row.tokenAddress || '',
+    row.rawAmountWei || '',
+    row.amountNormalized || '',
+    row.relayerAddress || '',
+    row.fromAddress || '',
+    row.toAddress || '',
+  ].join(','));
+
+  const csv = [headers.join(','), ...rows].join('\n');
+
+  return new Response(csv, {
+    headers: {
+      'Content-Type': 'text/csv',
+      'Content-Disposition': `attachment; filename="events-${chain}.csv"`,
+    },
+  });
+});
+
 // GET /export - Export page with download links
 app.get('/export', (c) => {
   const chain = getChainFromQuery(c);
   return c.render(
     <section>
       <h2>Export Data <span class="chain-badge">{getChainLabel(chain)}</span></h2>
-      <p>Download aggregate data as CSV files. Only aggregate metrics are available - no individual transaction or address data.</p>
+      <p>Download data as CSV or JSON files.</p>
 
       <h3>Available Downloads</h3>
       <table>
         <thead>
-          <tr><th>Dataset</th><th>Description</th><th>Download</th></tr>
+          <tr><th>Dataset</th><th>Description</th><th>CSV</th><th>JSON</th></tr>
         </thead>
         <tbody>
           <tr>
+            <td>Raw Events</td>
+            <td>All indexed Railgun events with full details</td>
+            <td><a href={`/export/events.csv?chain=${chain}`}>CSV</a></td>
+            <td><a href={`/export/events.json?chain=${chain}`}>JSON</a></td>
+          </tr>
+          <tr>
             <td>Daily Flows</td>
             <td>Daily deposit/withdrawal volumes per token</td>
-            <td><a href={`/export/daily-flows.csv?chain=${chain}`}>Download CSV</a></td>
+            <td><a href={`/export/daily-flows.csv?chain=${chain}`}>CSV</a></td>
+            <td>-</td>
           </tr>
           <tr>
             <td>Relayer Stats</td>
-            <td>Daily relayer concentration metrics (aggregate only)</td>
-            <td><a href={`/export/relayer-stats.csv?chain=${chain}`}>Download CSV</a></td>
+            <td>Daily relayer concentration metrics</td>
+            <td><a href={`/export/relayer-stats.csv?chain=${chain}`}>CSV</a></td>
+            <td>-</td>
           </tr>
         </tbody>
       </table>
-
-      <h3>Privacy Note</h3>
-      <p><em>Raw event data with addresses is not available for export. Only pre-computed aggregate statistics are provided to preserve user privacy.</em></p>
     </section>
   );
 });

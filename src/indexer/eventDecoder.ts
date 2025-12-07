@@ -41,8 +41,121 @@ interface UnshieldArgs {
   fee: bigint;
 }
 
+// Polygon SmartWallet ABI for Shield and Unshield events
+const POLYGON_SMARTWALLET_ABI = [
+  {
+    type: 'event',
+    name: 'Shield',
+    inputs: [
+      { name: 'treeNumber', type: 'uint256', indexed: false },
+      { name: 'startPosition', type: 'uint256', indexed: false },
+      { name: 'commitments', type: 'tuple[]', indexed: false, components: [
+        { name: 'npk', type: 'bytes32' },
+        { name: 'token', type: 'tuple', components: [
+          { name: 'tokenType', type: 'uint8' },
+          { name: 'tokenAddress', type: 'address' },
+          { name: 'tokenSubID', type: 'uint256' },
+        ]},
+        { name: 'value', type: 'uint120' },
+      ]},
+      { name: 'shieldCiphertext', type: 'tuple[]', indexed: false, components: [
+        { name: 'encryptedBundle', type: 'bytes32[3]' },
+        { name: 'shieldKey', type: 'bytes32' },
+      ]},
+      { name: 'fees', type: 'uint256[]', indexed: false },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'Unshield',
+    inputs: [
+      { name: 'to', type: 'address', indexed: false },
+      { name: 'token', type: 'tuple', indexed: false, components: [
+        { name: 'tokenType', type: 'uint8' },
+        { name: 'tokenAddress', type: 'address' },
+        { name: 'tokenSubID', type: 'uint256' },
+      ]},
+      { name: 'amount', type: 'uint256', indexed: false },
+      { name: 'fee', type: 'uint256', indexed: false },
+    ],
+  },
+] as const;
+
 // Returns multiple decoded events for Shield (one per commitment)
 export function decodeSmartWalletEvent(log: Log): DecodedEvent[] {
+  const eventSig = log.topics[0]?.toLowerCase();
+
+  // Try Polygon SmartWallet events first (by signature)
+  if (eventSig === POLYGON_EVENT_SIGNATURES.SMARTWALLET_SHIELD.toLowerCase()) {
+    try {
+      const decoded = decodeEventLog({
+        abi: POLYGON_SMARTWALLET_ABI,
+        data: log.data,
+        topics: log.topics,
+      });
+
+      const args = decoded.args as any;
+      const events: DecodedEvent[] = [];
+
+      for (const commitment of args.commitments) {
+        // Only process ERC20 tokens (tokenType === 0)
+        if (Number(commitment.token.tokenType) === 0) {
+          events.push({
+            eventName: 'Shield',
+            eventType: 'deposit',
+            tokenAddress: commitment.token.tokenAddress,
+            rawAmountWei: commitment.value.toString(),
+            relayerAddress: null,
+            fromAddress: null,
+            toAddress: null,
+            metadata: {
+              treeNumber: args.treeNumber.toString(),
+              startPosition: args.startPosition.toString(),
+            },
+          });
+        }
+      }
+      return events;
+    } catch (err) {
+      console.warn(`[decodeSmartWalletEvent] Failed to decode Polygon Shield at block ${log.blockNumber}: ${err}`);
+      return [];
+    }
+  }
+
+  if (eventSig === POLYGON_EVENT_SIGNATURES.SMARTWALLET_UNSHIELD.toLowerCase()) {
+    try {
+      const decoded = decodeEventLog({
+        abi: POLYGON_SMARTWALLET_ABI,
+        data: log.data,
+        topics: log.topics,
+      });
+
+      const args = decoded.args as any;
+
+      // Only process ERC20 tokens (tokenType === 0)
+      if (Number(args.token.tokenType) !== 0) {
+        return [];
+      }
+
+      return [{
+        eventName: 'Unshield',
+        eventType: 'withdrawal',
+        tokenAddress: args.token.tokenAddress,
+        rawAmountWei: args.amount.toString(),
+        relayerAddress: null,
+        fromAddress: null,
+        toAddress: args.to,
+        metadata: {
+          fee: args.fee.toString(),
+        },
+      }];
+    } catch (err) {
+      console.warn(`[decodeSmartWalletEvent] Failed to decode Polygon Unshield at block ${log.blockNumber}: ${err}`);
+      return [];
+    }
+  }
+
+  // Fall back to Ethereum SmartWallet ABI
   try {
     const decoded = decodeEventLog({
       abi: SMART_WALLET_ABI,
@@ -176,8 +289,8 @@ export function decodeRelayEvent(log: Log, abi?: Abi): DecodedEvent[] {
     // Polygon uses different event signatures that don't match standard ABIs
     const eventSig = log.topics[0]?.toLowerCase();
     
-    // Handle Polygon Unshield (signature 0x49fed1d0...)
-    if (eventSig === POLYGON_EVENT_SIGNATURES.UNSHIELD.toLowerCase() && log.data && log.data.length > 130) {
+    // Handle Polygon Relay Unshield (signature 0x49fed1d0...)
+    if (eventSig === POLYGON_EVENT_SIGNATURES.RELAY_UNSHIELD.toLowerCase() && log.data && log.data.length > 130) {
       try {
         // Decode as Unshield(address,address,uint256,uint256) directly from data
         const params = parseAbiParameters([
@@ -207,7 +320,7 @@ export function decodeRelayEvent(log: Log, abi?: Abi): DecodedEvent[] {
       }
     }
     
-    // Handle Polygon Shield (signature 0x4be10945...)
+    // Handle Polygon Relay Shield (signature 0x4be10945...)
     // Polygon Shield wraps an ERC20 transfer call with this structure:
     // - bytes32 commitment hash (32 bytes)
     // - uint256 offset (32 bytes)
@@ -218,7 +331,7 @@ export function decodeRelayEvent(log: Log, abi?: Abi): DecodedEvent[] {
     // - bytes4 transfer selector (4 bytes)
     // - address recipient padded (32 bytes)
     // - uint256 amount (32 bytes) <- amount at position 520-584 after 0x
-    if (eventSig === POLYGON_EVENT_SIGNATURES.SHIELD.toLowerCase() && log.data && log.data.length >= 586) {
+    if (eventSig === POLYGON_EVENT_SIGNATURES.RELAY_SHIELD.toLowerCase() && log.data && log.data.length >= 586) {
       try {
         const data = log.data;
 

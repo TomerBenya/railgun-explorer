@@ -11,7 +11,8 @@ console.log('Migrations complete.');
 
 // One-time data migration: Reset Polygon events to re-index with fixed decoder
 // This runs once and sets a flag in metadata to prevent re-running
-const POLYGON_RESET_KEY = 'polygon_events_reset_v1';
+// v3: Re-index with complete SmartWallet + Relay decoder for both deposits and withdrawals
+const POLYGON_RESET_KEY = 'polygon_events_reset_v3';
 const resetCheck = db.select().from(schema.metadata).where(eq(schema.metadata.key, POLYGON_RESET_KEY)).get();
 
 if (!resetCheck) {

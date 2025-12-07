@@ -50,8 +50,12 @@ export const RELAY_ABI: Abi = [
 
 // Known Polygon event signatures
 export const POLYGON_EVENT_SIGNATURES = {
-  UNSHIELD: '0x49fed1d0b752ce30eee63c7a81133f3363b532fec5d4d7dd1ccfd005de4555e1',
-  SHIELD: '0x4be109453ef7e895dc7215c929fff9b76b51483d56a4d04548b4866e9aa7c5ea',
+  // Relay contract events
+  RELAY_UNSHIELD: '0x49fed1d0b752ce30eee63c7a81133f3363b532fec5d4d7dd1ccfd005de4555e1',
+  RELAY_SHIELD: '0x4be109453ef7e895dc7215c929fff9b76b51483d56a4d04548b4866e9aa7c5ea',
+  // SmartWallet contract events
+  SMARTWALLET_SHIELD: '0x3a5b9dc26075a3801a6ddccf95fec485bb7500a91b44cec1add984c21ee6db3b',
+  SMARTWALLET_UNSHIELD: '0xd93cf895c7d5b2cd7dc7a098b678b3089f37d91f48d9b83a0800a91cbdf05284',
 } as const;
 
 // Event type mapping
