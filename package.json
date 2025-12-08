@@ -10,7 +10,8 @@
     "index:polygon": "bun run src/indexer/indexPolygon.ts",
     "analytics:flows": "bun run src/analytics/dailyFlows.ts",
     "analytics:relayers": "bun run src/analytics/relayerStats.ts",
-    "analytics": "bun run analytics:flows && bun run analytics:relayers",
+    "analytics:fees": "bun run src/analytics/relayerFeeRevenue.ts",
+    "analytics": "bun run analytics:flows && bun run analytics:relayers && bun run analytics:fees",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun run src/db/migrate.ts",
     "db:studio": "drizzle-kit studio"

@@ -431,6 +431,7 @@ app.use('*', jsxRenderer(({ children }) => {
             <a href="/?chain=ethereum" id="nav-overview">Overview</a>
             <a href="/tokens?chain=ethereum" id="nav-tokens">Tokens</a>
             <a href="/relayers?chain=ethereum" id="nav-relayers">Relayers</a>
+            <a href="/relayer-fees?chain=ethereum" id="nav-relayer-fees">Relayer Fees</a>
             <a href="/charts?chain=ethereum" id="nav-charts">Charts</a>
             <a href="/ethics?chain=ethereum" id="nav-ethics">Ethics &amp; Limitations</a>
             <div class="network-selector">
@@ -468,7 +469,7 @@ app.use('*', jsxRenderer(({ children }) => {
             }
             
             // Update all nav links with current chain
-            const pages = ['overview', 'tokens', 'relayers', 'charts', 'ethics'];
+            const pages = ['overview', 'tokens', 'relayers', 'relayer-fees', 'charts', 'export', 'ethics'];
             pages.forEach(page => {
               const link = document.getElementById('nav-' + page);
               if (link) {
@@ -813,6 +814,191 @@ app.get('/relayers', async (c) => {
       </table>
       <ClientPagination tableId="relayers-table" defaultLimit={20} />
       <script dangerouslySetInnerHTML={{ __html: `initPaginator('relayers-table', 20);` }} />
+    </section>
+  );
+});
+
+// GET /relayer-fees - Relayer fee revenue dashboard
+app.get('/relayer-fees', async (c) => {
+  const chain = getChainFromQuery(c);
+
+  // Get daily fee revenue aggregated by relayer and token
+  const feeRevenue = chain === 'all'
+    ? await db.select({
+        date: schema.relayerFeeRevenueDaily.date,
+        chain: schema.relayerFeeRevenueDaily.chain,
+        relayerAddress: schema.relayerFeeRevenueDaily.relayerAddress,
+        tokenSymbol: schema.tokens.symbol,
+        totalFeeNormalized: sql<number>`sum(${schema.relayerFeeRevenueDaily.totalFeeNormalized})`,
+        txCount: sql<number>`sum(${schema.relayerFeeRevenueDaily.txCount})`,
+        avgFeeNormalized: sql<number>`avg(${schema.relayerFeeRevenueDaily.avgFeeNormalized})`,
+      })
+        .from(schema.relayerFeeRevenueDaily)
+        .leftJoin(schema.tokens, eq(schema.relayerFeeRevenueDaily.tokenId, schema.tokens.id))
+        .groupBy(
+          schema.relayerFeeRevenueDaily.date,
+          schema.relayerFeeRevenueDaily.chain,
+          schema.relayerFeeRevenueDaily.relayerAddress,
+          schema.relayerFeeRevenueDaily.tokenId
+        )
+        .orderBy(desc(schema.relayerFeeRevenueDaily.date))
+        .limit(100)
+    : await db.select({
+        date: schema.relayerFeeRevenueDaily.date,
+        relayerAddress: schema.relayerFeeRevenueDaily.relayerAddress,
+        tokenSymbol: schema.tokens.symbol,
+        totalFeeNormalized: schema.relayerFeeRevenueDaily.totalFeeNormalized,
+        txCount: schema.relayerFeeRevenueDaily.txCount,
+        avgFeeNormalized: schema.relayerFeeRevenueDaily.avgFeeNormalized,
+      })
+        .from(schema.relayerFeeRevenueDaily)
+        .leftJoin(schema.tokens, eq(schema.relayerFeeRevenueDaily.tokenId, schema.tokens.id))
+        .where(eq(schema.relayerFeeRevenueDaily.chain, chain))
+        .orderBy(desc(schema.relayerFeeRevenueDaily.date))
+        .limit(100);
+
+  // Get top relayers by total revenue (all time)
+  const topRelayers = chain === 'all'
+    ? await db.select({
+        relayerAddress: schema.relayerFeeRevenueDaily.relayerAddress,
+        chain: schema.relayerFeeRevenueDaily.chain,
+        totalRevenue: sql<number>`sum(${schema.relayerFeeRevenueDaily.totalFeeNormalized})`,
+        totalTxCount: sql<number>`sum(${schema.relayerFeeRevenueDaily.txCount})`,
+      })
+        .from(schema.relayerFeeRevenueDaily)
+        .groupBy(schema.relayerFeeRevenueDaily.relayerAddress, schema.relayerFeeRevenueDaily.chain)
+        .orderBy(desc(sql<number>`sum(${schema.relayerFeeRevenueDaily.totalFeeNormalized})`))
+        .limit(20)
+    : await db.select({
+        relayerAddress: schema.relayerFeeRevenueDaily.relayerAddress,
+        totalRevenue: sql<number>`sum(${schema.relayerFeeRevenueDaily.totalFeeNormalized})`,
+        totalTxCount: sql<number>`sum(${schema.relayerFeeRevenueDaily.txCount})`,
+      })
+        .from(schema.relayerFeeRevenueDaily)
+        .where(eq(schema.relayerFeeRevenueDaily.chain, chain))
+        .groupBy(schema.relayerFeeRevenueDaily.relayerAddress)
+        .orderBy(desc(sql<number>`sum(${schema.relayerFeeRevenueDaily.totalFeeNormalized})`))
+        .limit(20);
+
+  // Get daily totals for chart
+  const dailyTotals = chain === 'all'
+    ? await db.select({
+        date: schema.relayerFeeRevenueDaily.date,
+        chain: schema.relayerFeeRevenueDaily.chain,
+        totalFees: sql<number>`sum(${schema.relayerFeeRevenueDaily.totalFeeNormalized})`,
+        totalTxCount: sql<number>`sum(${schema.relayerFeeRevenueDaily.txCount})`,
+      })
+        .from(schema.relayerFeeRevenueDaily)
+        .groupBy(schema.relayerFeeRevenueDaily.date, schema.relayerFeeRevenueDaily.chain)
+        .orderBy(desc(schema.relayerFeeRevenueDaily.date))
+        .limit(30)
+    : await db.select({
+        date: schema.relayerFeeRevenueDaily.date,
+        totalFees: sql<number>`sum(${schema.relayerFeeRevenueDaily.totalFeeNormalized})`,
+        totalTxCount: sql<number>`sum(${schema.relayerFeeRevenueDaily.txCount})`,
+      })
+        .from(schema.relayerFeeRevenueDaily)
+        .where(eq(schema.relayerFeeRevenueDaily.chain, chain))
+        .groupBy(schema.relayerFeeRevenueDaily.date)
+        .orderBy(desc(schema.relayerFeeRevenueDaily.date))
+        .limit(30);
+
+  return c.render(
+    <section>
+      <h2>Relayer Fee Revenue <span class="chain-badge">{getChainLabel(chain)}</span></h2>
+      <p><em>Total fees collected by relayers for processing withdrawals. Fees are paid in the same token as the withdrawal.</em></p>
+
+      <h3>Daily Fee Revenue</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            {chain === 'all' && <th>Chain</th>}
+            <th>Total Fees</th>
+            <th>Transactions</th>
+            <th>Avg Fee per Tx</th>
+          </tr>
+        </thead>
+        <tbody>
+          {dailyTotals.length === 0 ? (
+            <tr><td colSpan={chain === 'all' ? 5 : 4}>No data yet. Run analytics:fees first.</td></tr>
+          ) : (
+            dailyTotals.map((row) => (
+              <tr>
+                <td>{row.date}</td>
+                {chain === 'all' && <td>{row.chain}</td>}
+                <td>{row.totalFees?.toFixed(4) || '0.0000'}</td>
+                <td>{row.totalTxCount || 0}</td>
+                <td>{row.totalFees && row.totalTxCount ? (row.totalFees / row.totalTxCount).toFixed(6) : '0.000000'}</td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+
+      <h3>Top Relayers by Revenue</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Relayer Address</th>
+            {chain === 'all' && <th>Chain</th>}
+            <th>Total Revenue</th>
+            <th>Total Transactions</th>
+            <th>Avg Fee per Tx</th>
+          </tr>
+        </thead>
+        <tbody>
+          {topRelayers.length === 0 ? (
+            <tr><td colSpan={chain === 'all' ? 5 : 4}>No data yet. Run analytics:fees first.</td></tr>
+          ) : (
+            topRelayers.map((row) => (
+              <tr>
+                <td style={{ fontFamily: 'monospace', fontSize: '0.85em' }}>
+                  {row.relayerAddress?.substring(0, 10)}...{row.relayerAddress?.substring(34)}
+                </td>
+                {chain === 'all' && <td>{row.chain}</td>}
+                <td>{row.totalRevenue?.toFixed(4) || '0.0000'}</td>
+                <td>{row.totalTxCount || 0}</td>
+                <td>{row.totalRevenue && row.totalTxCount ? (row.totalRevenue / row.totalTxCount).toFixed(6) : '0.000000'}</td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+
+      <h3>Recent Fee Revenue by Relayer & Token</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            {chain === 'all' && <th>Chain</th>}
+            <th>Relayer</th>
+            <th>Token</th>
+            <th>Total Fees</th>
+            <th>Tx Count</th>
+            <th>Avg Fee</th>
+          </tr>
+        </thead>
+        <tbody>
+          {feeRevenue.length === 0 ? (
+            <tr><td colSpan={chain === 'all' ? 7 : 6}>No data yet. Run analytics:fees first.</td></tr>
+          ) : (
+            feeRevenue.map((row) => (
+              <tr>
+                <td>{row.date}</td>
+                {chain === 'all' && <td>{row.chain}</td>}
+                <td style={{ fontFamily: 'monospace', fontSize: '0.85em' }}>
+                  {row.relayerAddress?.substring(0, 8)}...{row.relayerAddress?.substring(36)}
+                </td>
+                <td>{row.tokenSymbol || 'Unknown'}</td>
+                <td>{row.totalFeeNormalized?.toFixed(4) || '0.0000'}</td>
+                <td>{row.txCount || 0}</td>
+                <td>{row.avgFeeNormalized?.toFixed(6) || '0.000000'}</td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
     </section>
   );
 });
