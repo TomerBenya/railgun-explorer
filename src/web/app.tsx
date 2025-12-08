@@ -1,9 +1,20 @@
 import { Hono } from 'hono';
 import { jsxRenderer } from 'hono/jsx-renderer';
 import { db, schema } from '../db/client';
-import { desc, sql, eq, and } from 'drizzle-orm';
+import { desc, sql, eq, and, gte, lte } from 'drizzle-orm';
 
 type ChainName = 'ethereum' | 'polygon' | 'all';
+type TimePreset = '7d' | '30d' | '90d' | '1y' | 'all' | 'custom';
+type EventTypeFilter = 'all' | 'deposits' | 'withdrawals';
+
+interface FilterParams {
+  startDate: string | null;
+  endDate: string | null;
+  timePreset: TimePreset;
+  tokenId: number | null;
+  eventType: EventTypeFilter;
+  minVolume: number | null;
+}
 
 // Client-side pagination component (renders placeholder, JS handles logic)
 function ClientPagination({ tableId, defaultLimit = 20 }: { tableId: string; defaultLimit?: number }) {
@@ -159,6 +170,172 @@ function getChainLabel(chain: ChainName): string {
   return chain.charAt(0).toUpperCase() + chain.slice(1);
 }
 
+// Calculate date range from preset
+function getDateRangeFromPreset(preset: TimePreset): { startDate: string | null; endDate: string | null } {
+  if (preset === 'all') return { startDate: null, endDate: null };
+
+  const now = new Date();
+  const endDate = now.toISOString().split('T')[0];
+  let startDate: string;
+
+  switch (preset) {
+    case '7d':
+      now.setDate(now.getDate() - 7);
+      break;
+    case '30d':
+      now.setDate(now.getDate() - 30);
+      break;
+    case '90d':
+      now.setDate(now.getDate() - 90);
+      break;
+    case '1y':
+      now.setFullYear(now.getFullYear() - 1);
+      break;
+    default:
+      return { startDate: null, endDate: null };
+  }
+  startDate = now.toISOString().split('T')[0];
+  return { startDate, endDate };
+}
+
+// Parse filter params from query string
+function getFiltersFromQuery(c: any): FilterParams {
+  const timePreset = (c.req.query('timePreset') as TimePreset) || 'all';
+  const customStart = c.req.query('startDate') as string | undefined;
+  const customEnd = c.req.query('endDate') as string | undefined;
+  const tokenIdStr = c.req.query('tokenId') as string | undefined;
+  const eventType = (c.req.query('eventType') as EventTypeFilter) || 'all';
+  const minVolumeStr = c.req.query('minVolume') as string | undefined;
+
+  let startDate: string | null = null;
+  let endDate: string | null = null;
+
+  if (timePreset === 'custom' && customStart && customEnd) {
+    startDate = customStart;
+    endDate = customEnd;
+  } else if (timePreset !== 'all' && timePreset !== 'custom') {
+    const range = getDateRangeFromPreset(timePreset);
+    startDate = range.startDate;
+    endDate = range.endDate;
+  }
+
+  return {
+    startDate,
+    endDate,
+    timePreset,
+    tokenId: tokenIdStr ? parseInt(tokenIdStr) : null,
+    eventType,
+    minVolume: minVolumeStr ? parseFloat(minVolumeStr) : null,
+  };
+}
+
+// FilterBar component props
+interface FilterBarProps {
+  chain: ChainName;
+  filters: FilterParams;
+  basePath: string;
+  showTokenFilter?: boolean;
+  showEventTypeFilter?: boolean;
+  showMinVolumeFilter?: boolean;
+  tokens?: Array<{ id: number; symbol: string | null }>;
+}
+
+// FilterBar component
+function FilterBar({ chain, filters, basePath, showTokenFilter, showEventTypeFilter, showMinVolumeFilter, tokens }: FilterBarProps) {
+  const timePresets: { value: TimePreset; label: string }[] = [
+    { value: 'all', label: 'All Time' },
+    { value: '7d', label: 'Last 7 Days' },
+    { value: '30d', label: 'Last 30 Days' },
+    { value: '90d', label: 'Last 90 Days' },
+    { value: '1y', label: 'Last Year' },
+    { value: 'custom', label: 'Custom Range' },
+  ];
+
+  return (
+    <div class="filter-bar">
+      <form method="get" action={basePath} class="filter-form">
+        <input type="hidden" name="chain" value={chain} />
+
+        <div class="filter-group">
+          <label for="timePreset">Time Range:</label>
+          <select name="timePreset" id="timePreset" class="filter-select">
+            {timePresets.map(p => (
+              <option value={p.value} selected={p.value === filters.timePreset}>{p.label}</option>
+            ))}
+          </select>
+        </div>
+
+        <div class="filter-group custom-dates" id="custom-dates" style={{ display: filters.timePreset === 'custom' ? 'flex' : 'none' }}>
+          <label for="startDate">From:</label>
+          <input type="date" name="startDate" id="startDate" value={filters.startDate || ''} class="filter-input" />
+          <label for="endDate">To:</label>
+          <input type="date" name="endDate" id="endDate" value={filters.endDate || ''} class="filter-input" />
+        </div>
+
+        {showTokenFilter && tokens && (
+          <div class="filter-group">
+            <label for="tokenId">Token:</label>
+            <select name="tokenId" id="tokenId" class="filter-select">
+              <option value="" selected={!filters.tokenId}>All Tokens</option>
+              {tokens.map(t => (
+                <option value={t.id} selected={t.id === filters.tokenId}>{t.symbol || 'Unknown'}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {showEventTypeFilter && (
+          <div class="filter-group">
+            <label for="eventType">Show:</label>
+            <select name="eventType" id="eventType" class="filter-select">
+              <option value="all" selected={filters.eventType === 'all'}>All Events</option>
+              <option value="deposits" selected={filters.eventType === 'deposits'}>Deposits Only</option>
+              <option value="withdrawals" selected={filters.eventType === 'withdrawals'}>Withdrawals Only</option>
+            </select>
+          </div>
+        )}
+
+        {showMinVolumeFilter && (
+          <div class="filter-group">
+            <label for="minVolume">Min Volume:</label>
+            <input
+              type="number"
+              name="minVolume"
+              id="minVolume"
+              value={filters.minVolume || ''}
+              placeholder="0"
+              step="0.01"
+              min="0"
+              class="filter-input"
+            />
+          </div>
+        )}
+
+        <div class="filter-actions">
+          <button type="submit" class="filter-btn">Apply Filters</button>
+          <a href={`${basePath}?chain=${chain}`} class="filter-btn filter-btn-reset">Reset</a>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// Client-side script to toggle custom date inputs
+const filterScript = `
+document.addEventListener('DOMContentLoaded', function() {
+  const timePresetSelect = document.getElementById('timePreset');
+  const customDates = document.getElementById('custom-dates');
+  if (timePresetSelect && customDates) {
+    // Set initial state based on current selection
+    customDates.style.display = timePresetSelect.value === 'custom' ? 'flex' : 'none';
+    // Listen for changes
+    timePresetSelect.addEventListener('change', function() {
+      customDates.style.display = this.value === 'custom' ? 'flex' : 'none';
+    });
+  }
+});
+`;
+
 const app = new Hono();
 
 // Error handling middleware
@@ -218,9 +395,28 @@ app.use('*', jsxRenderer(({ children }) => {
           .pagination-ellipsis { padding: 0 0.5rem; color: #666; }
           .pagination-size { margin-left: auto; }
           .pagination-size select { padding: 0.4rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem; }
+          .filter-bar { background: #f9f9f9; border: 1px solid #e0e0e0; border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem; }
+          .filter-form { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; }
+          .filter-group { display: flex; flex-direction: column; gap: 0.25rem; }
+          .filter-group label { font-size: 0.85rem; font-weight: 500; color: #555; }
+          .filter-select, .filter-input { padding: 0.5rem 0.75rem; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9rem; min-width: 140px; }
+          .filter-select:focus, .filter-input:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
+          .filter-input[type="date"] { min-width: 130px; }
+          .filter-input[type="number"] { min-width: 100px; }
+          .custom-dates { flex-direction: row; align-items: center; gap: 0.5rem; }
+          .custom-dates label { margin: 0; }
+          .filter-actions { display: flex; gap: 0.5rem; margin-left: auto; }
+          .filter-btn { padding: 0.5rem 1rem; border: 1px solid #0066cc; border-radius: 4px; font-size: 0.9rem; cursor: pointer; text-decoration: none; }
+          .filter-btn:not(.filter-btn-reset) { background: #0066cc; color: #fff; }
+          .filter-btn:not(.filter-btn-reset):hover { background: #0055aa; }
+          .filter-btn-reset { background: #fff; color: #0066cc; }
+          .filter-btn-reset:hover { background: #f0f0f0; }
+          .active-filters { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #e0e0e0; }
+          .active-filter-tag { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.25rem 0.5rem; background: #e8f4fc; border: 1px solid #b3d9f2; border-radius: 4px; font-size: 0.8rem; color: #0066cc; }
         `}</style>
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <script dangerouslySetInnerHTML={{ __html: paginationScript }} />
+        <script dangerouslySetInnerHTML={{ __html: filterScript }} />
         <script dangerouslySetInnerHTML={{ __html: `
           // Get chain from URL params
           const urlParams = new URLSearchParams(window.location.search);
@@ -236,7 +432,6 @@ app.use('*', jsxRenderer(({ children }) => {
             <a href="/tokens?chain=ethereum" id="nav-tokens">Tokens</a>
             <a href="/relayers?chain=ethereum" id="nav-relayers">Relayers</a>
             <a href="/charts?chain=ethereum" id="nav-charts">Charts</a>
-            <a href="/export?chain=ethereum" id="nav-export">Export</a>
             <a href="/ethics?chain=ethereum" id="nav-ethics">Ethics &amp; Limitations</a>
             <div class="network-selector">
               <label for="chain-select">Network:</label>
@@ -273,7 +468,7 @@ app.use('*', jsxRenderer(({ children }) => {
             }
             
             // Update all nav links with current chain
-            const pages = ['overview', 'tokens', 'relayers', 'charts', 'export', 'ethics'];
+            const pages = ['overview', 'tokens', 'relayers', 'charts', 'ethics'];
             pages.forEach(page => {
               const link = document.getElementById('nav-' + page);
               if (link) {
@@ -293,42 +488,89 @@ app.use('*', jsxRenderer(({ children }) => {
 app.get('/', async (c) => {
   try {
     const chain = getChainFromQuery(c);
+    const filters = getFiltersFromQuery(c);
 
-    const baseQuery = db.select({
+    // Fetch tokens for the filter dropdown
+    const allTokens = chain === 'all'
+      ? await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol })
+          .from(schema.tokens)
+          .orderBy(schema.tokens.symbol)
+      : await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol })
+          .from(schema.tokens)
+          .where(eq(schema.tokens.chain, chain))
+          .orderBy(schema.tokens.symbol);
+
+    // Build conditions array
+    const conditions = [];
+    if (chain !== 'all') {
+      conditions.push(eq(schema.dailyFlows.chain, chain));
+    }
+    if (filters.startDate) {
+      conditions.push(gte(schema.dailyFlows.date, filters.startDate));
+    }
+    if (filters.endDate) {
+      conditions.push(lte(schema.dailyFlows.date, filters.endDate));
+    }
+    if (filters.tokenId) {
+      conditions.push(eq(schema.dailyFlows.tokenId, filters.tokenId));
+    }
+
+    // Base select for aggregation
+    const baseSelect = {
       date: schema.dailyFlows.date,
       totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
       totalWithdrawals: sql<number>`sum(${schema.dailyFlows.totalWithdrawals})`,
       netFlow: sql<number>`sum(${schema.dailyFlows.netFlow})`,
-    })
-      .from(schema.dailyFlows);
+    };
 
-    // Fetch all data for client-side pagination
-    const flows = chain === 'all'
-      ? await baseQuery
+    // Fetch flows with filters
+    const flows = conditions.length > 0
+      ? await db.select(baseSelect)
+          .from(schema.dailyFlows)
+          .where(and(...conditions))
           .groupBy(schema.dailyFlows.date)
           .orderBy(desc(schema.dailyFlows.date))
-      : await baseQuery
-          .where(eq(schema.dailyFlows.chain, chain))
+      : await db.select(baseSelect)
+          .from(schema.dailyFlows)
           .groupBy(schema.dailyFlows.date)
           .orderBy(desc(schema.dailyFlows.date));
 
+    // Filter by event type (hide columns in display)
+    const showDeposits = filters.eventType === 'all' || filters.eventType === 'deposits';
+    const showWithdrawals = filters.eventType === 'all' || filters.eventType === 'withdrawals';
+
     return c.render(
     <section>
-      <h2>Daily Overview (All Tokens) <span class="chain-badge">{getChainLabel(chain)}</span></h2>
+      <h2>Daily Overview {filters.tokenId ? '' : '(All Tokens)'} <span class="chain-badge">{getChainLabel(chain)}</span></h2>
+
+      <FilterBar
+        chain={chain}
+        filters={filters}
+        basePath="/"
+        showTokenFilter={true}
+        showEventTypeFilter={true}
+        tokens={allTokens}
+      />
+
       <table id="overview-table">
         <thead>
-          <tr><th>Date</th><th>Deposits</th><th>Withdrawals</th><th>Net Flow</th></tr>
+          <tr>
+            <th>Date</th>
+            {showDeposits && <th>Deposits</th>}
+            {showWithdrawals && <th>Withdrawals</th>}
+            {showDeposits && showWithdrawals && <th>Net Flow</th>}
+          </tr>
         </thead>
         <tbody>
           {flows.length === 0 ? (
-            <tr><td colSpan={4}>No data yet. Run the indexer and analytics first.</td></tr>
+            <tr><td colSpan={4}>No data found for the selected filters.</td></tr>
           ) : (
             flows.map((row, idx) => (
               <tr data-row={idx}>
                 <td>{row.date}</td>
-                <td>{row.totalDeposits?.toFixed(2)}</td>
-                <td>{row.totalWithdrawals?.toFixed(2)}</td>
-                <td>{row.netFlow?.toFixed(2)}</td>
+                {showDeposits && <td>{row.totalDeposits?.toFixed(2)}</td>}
+                {showWithdrawals && <td>{row.totalWithdrawals?.toFixed(2)}</td>}
+                {showDeposits && showWithdrawals && <td>{row.netFlow?.toFixed(2)}</td>}
               </tr>
             ))
           )}
@@ -347,46 +589,71 @@ app.get('/', async (c) => {
 // GET /tokens - Token list
 app.get('/tokens', async (c) => {
   const chain = getChainFromQuery(c);
+  const filters = getFiltersFromQuery(c);
 
-  // Fetch all tokens for client-side pagination
-  const tokenStats = chain === 'all'
-    ? await db.select({
+  // Build join conditions for dailyFlows
+  const joinConditions = [eq(schema.tokens.id, schema.dailyFlows.tokenId)];
+  if (chain !== 'all') {
+    joinConditions.push(eq(schema.dailyFlows.chain, chain));
+  }
+  if (filters.startDate) {
+    joinConditions.push(gte(schema.dailyFlows.date, filters.startDate));
+  }
+  if (filters.endDate) {
+    joinConditions.push(lte(schema.dailyFlows.date, filters.endDate));
+  }
+
+  // Fetch all tokens with filtered stats
+  const tokenStatsQuery = chain === 'all'
+    ? db.select({
         id: schema.tokens.id,
         symbol: schema.tokens.symbol,
         address: schema.tokens.address,
         totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
       })
         .from(schema.tokens)
-        .leftJoin(schema.dailyFlows, eq(schema.tokens.id, schema.dailyFlows.tokenId))
+        .leftJoin(schema.dailyFlows, and(...joinConditions))
         .groupBy(schema.tokens.id)
         .orderBy(desc(sql`sum(${schema.dailyFlows.totalDeposits})`))
-    : await db.select({
+    : db.select({
         id: schema.tokens.id,
         symbol: schema.tokens.symbol,
         address: schema.tokens.address,
         totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
       })
         .from(schema.tokens)
-        .leftJoin(schema.dailyFlows, and(
-          eq(schema.tokens.id, schema.dailyFlows.tokenId),
-          eq(schema.dailyFlows.chain, chain)
-        ))
+        .leftJoin(schema.dailyFlows, and(...joinConditions))
         .where(eq(schema.tokens.chain, chain))
         .groupBy(schema.tokens.id)
         .orderBy(desc(sql`sum(${schema.dailyFlows.totalDeposits})`));
 
+  const tokenStats = await tokenStatsQuery;
+
+  // Apply min volume filter (client-side since it's on aggregated data)
+  const filteredTokens = filters.minVolume
+    ? tokenStats.filter(t => (t.totalDeposits || 0) >= (filters.minVolume || 0))
+    : tokenStats;
+
   return c.render(
     <section>
       <h2>Tokens by Deposit Volume <span class="chain-badge">{getChainLabel(chain)}</span></h2>
+
+      <FilterBar
+        chain={chain}
+        filters={filters}
+        basePath="/tokens"
+        showMinVolumeFilter={true}
+      />
+
       <table id="tokens-table">
         <thead>
           <tr><th>Symbol</th><th>Total Deposits</th><th>Details</th></tr>
         </thead>
         <tbody>
-          {tokenStats.length === 0 ? (
-            <tr><td colSpan={3}>No data yet. Run the indexer and analytics first.</td></tr>
+          {filteredTokens.length === 0 ? (
+            <tr><td colSpan={3}>No tokens found for the selected filters.</td></tr>
           ) : (
-            tokenStats.map((t, idx) => (
+            filteredTokens.map((t, idx) => (
               <tr data-row={idx}>
                 <td>{t.symbol || 'Unknown'}</td>
                 <td>{t.totalDeposits?.toFixed(2) || '0'}</td>
@@ -405,43 +672,58 @@ app.get('/tokens', async (c) => {
 // GET /tokens/:id - Token detail
 app.get('/tokens/:id', async (c) => {
   const chain = getChainFromQuery(c);
+  const filters = getFiltersFromQuery(c);
   const tokenId = parseInt(c.req.param('id'));
   const token = await db.select()
     .from(schema.tokens)
     .where(eq(schema.tokens.id, tokenId))
     .get();
 
-  // Fetch all flows for client-side pagination
-  const flows = chain === 'all'
-    ? await db.select({
-        date: schema.dailyFlows.date,
-        totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
-        totalWithdrawals: sql<number>`sum(${schema.dailyFlows.totalWithdrawals})`,
-        netFlow: sql<number>`sum(${schema.dailyFlows.netFlow})`,
-      })
-        .from(schema.dailyFlows)
-        .where(eq(schema.dailyFlows.tokenId, tokenId))
-        .groupBy(schema.dailyFlows.date)
-        .orderBy(desc(schema.dailyFlows.date))
-    : await db.select()
-        .from(schema.dailyFlows)
-        .where(and(
-          eq(schema.dailyFlows.tokenId, tokenId),
-          eq(schema.dailyFlows.chain, chain)
-        ))
-        .orderBy(desc(schema.dailyFlows.date));
+  // Build conditions array
+  const conditions = [eq(schema.dailyFlows.tokenId, tokenId)];
+  if (chain !== 'all') {
+    conditions.push(eq(schema.dailyFlows.chain, chain));
+  }
+  if (filters.startDate) {
+    conditions.push(gte(schema.dailyFlows.date, filters.startDate));
+  }
+  if (filters.endDate) {
+    conditions.push(lte(schema.dailyFlows.date, filters.endDate));
+  }
+
+  // Base select for aggregation
+  const baseSelect = {
+    date: schema.dailyFlows.date,
+    totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
+    totalWithdrawals: sql<number>`sum(${schema.dailyFlows.totalWithdrawals})`,
+    netFlow: sql<number>`sum(${schema.dailyFlows.netFlow})`,
+  };
+
+  // Fetch flows with filters
+  const flows = await db.select(baseSelect)
+    .from(schema.dailyFlows)
+    .where(and(...conditions))
+    .groupBy(schema.dailyFlows.date)
+    .orderBy(desc(schema.dailyFlows.date));
 
   return c.render(
     <section>
       <h2>{token?.symbol || 'Token'} Daily Flows <span class="chain-badge">{getChainLabel(chain)}</span></h2>
       <p><a href={`/tokens?chain=${chain}`}>← Back to Tokens</a></p>
+
+      <FilterBar
+        chain={chain}
+        filters={filters}
+        basePath={`/tokens/${tokenId}`}
+      />
+
       <table id="token-detail-table">
         <thead>
           <tr><th>Date</th><th>Deposits</th><th>Withdrawals</th><th>Net</th></tr>
         </thead>
         <tbody>
           {flows.length === 0 ? (
-            <tr><td colSpan={4}>No data for this token.</td></tr>
+            <tr><td colSpan={4}>No data found for the selected filters.</td></tr>
           ) : (
             flows.map((row, idx) => (
               <tr data-row={idx}>
@@ -463,35 +745,59 @@ app.get('/tokens/:id', async (c) => {
 // GET /relayers - Relayer concentration metrics
 app.get('/relayers', async (c) => {
   const chain = getChainFromQuery(c);
+  const filters = getFiltersFromQuery(c);
 
-  // Fetch all stats for client-side pagination
-  const stats = chain === 'all'
-    ? await db.select({
-        date: schema.relayerStatsDaily.date,
-        numActiveRelayers: sql<number>`sum(${schema.relayerStatsDaily.numActiveRelayers})`,
-        top5Share: sql<number>`avg(${schema.relayerStatsDaily.top5Share})`,
-        hhi: sql<number>`avg(${schema.relayerStatsDaily.hhi})`,
-        relayerTxCount: sql<number>`sum(${schema.relayerStatsDaily.relayerTxCount})`,
-      })
+  // Build conditions array
+  const conditions = [];
+  if (chain !== 'all') {
+    conditions.push(eq(schema.relayerStatsDaily.chain, chain));
+  }
+  if (filters.startDate) {
+    conditions.push(gte(schema.relayerStatsDaily.date, filters.startDate));
+  }
+  if (filters.endDate) {
+    conditions.push(lte(schema.relayerStatsDaily.date, filters.endDate));
+  }
+
+  // Base select for aggregation
+  const baseSelect = {
+    date: schema.relayerStatsDaily.date,
+    numActiveRelayers: sql<number>`sum(${schema.relayerStatsDaily.numActiveRelayers})`,
+    top5Share: sql<number>`avg(${schema.relayerStatsDaily.top5Share})`,
+    hhi: sql<number>`avg(${schema.relayerStatsDaily.hhi})`,
+    relayerTxCount: sql<number>`sum(${schema.relayerStatsDaily.relayerTxCount})`,
+  };
+
+  // Fetch stats with filters
+  const stats = conditions.length > 0
+    ? await db.select(baseSelect)
         .from(schema.relayerStatsDaily)
+        .where(and(...conditions))
         .groupBy(schema.relayerStatsDaily.date)
         .orderBy(desc(schema.relayerStatsDaily.date))
-    : await db.select()
+    : await db.select(baseSelect)
         .from(schema.relayerStatsDaily)
-        .where(eq(schema.relayerStatsDaily.chain, chain))
+        .groupBy(schema.relayerStatsDaily.date)
         .orderBy(desc(schema.relayerStatsDaily.date));
 
   return c.render(
     <section>
       <h2>Relayer Concentration Metrics <span class="chain-badge">{getChainLabel(chain)}</span></h2>
       <p><em>Aggregate statistics only. No individual relayer data exposed.</em></p>
+
+      <FilterBar
+        chain={chain}
+        filters={filters}
+        basePath="/relayers"
+      />
+
       <table id="relayers-table">
         <thead>
           <tr><th>Date</th><th>Active Relayers</th><th>Top 5 Share</th><th>HHI</th><th>Tx Count</th></tr>
         </thead>
         <tbody>
           {stats.length === 0 ? (
-            <tr><td colSpan={5}>No data yet. Run the indexer and analytics first.</td></tr>
+            <tr><td colSpan={5}>No data found for the selected filters.</td></tr>
           ) : (
             stats.map((row, idx) => (
               <tr data-row={idx}>
