@@ -48,6 +48,14 @@ async function runAnalytics(): Promise<void> {
     });
     await relayerProc.exited;
 
+    // Run relayer fee revenue analytics
+    const feesProc = spawn(['bun', 'run', 'src/analytics/relayerFeeRevenue.ts'], {
+      stdout: 'inherit',
+      stderr: 'inherit',
+      cwd: process.cwd(),
+    });
+    await feesProc.exited;
+
     console.log('[start-all] Analytics complete.');
   } finally {
     analyticsRunning = false;
