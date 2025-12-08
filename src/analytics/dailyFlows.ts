@@ -1,7 +1,8 @@
 import { db, schema } from '../db/client';
-import { sql, eq } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 
-const MIN_TX_THRESHOLD = 3;
+// Set to 1 to include all tokens (previously 3 for privacy, but excluded too many low-volume tokens)
+const MIN_TX_THRESHOLD = 1;
 
 async function computeDailyFlows() {
   console.log('Computing daily flows...');

@@ -5,16 +5,153 @@ import { desc, sql, eq, and } from 'drizzle-orm';
 
 type ChainName = 'ethereum' | 'polygon' | 'all';
 
+// Client-side pagination component (renders placeholder, JS handles logic)
+function ClientPagination({ tableId, defaultLimit = 20 }: { tableId: string; defaultLimit?: number }) {
+  return (
+    <div class="pagination" id={`${tableId}-pagination`} data-table={tableId} data-limit={defaultLimit}>
+      <div class="pagination-info"></div>
+      <div class="pagination-controls">
+        <button class="pagination-btn" data-action="first" disabled>« First</button>
+        <button class="pagination-btn" data-action="prev" disabled>‹ Prev</button>
+        <div class="pagination-pages"></div>
+        <button class="pagination-btn" data-action="next">Next ›</button>
+        <button class="pagination-btn" data-action="last">Last »</button>
+      </div>
+      <div class="pagination-size">
+        <label>
+          Per page:
+          <select data-action="limit">
+            {[10, 20, 50, 100].map(size => (
+              <option value={size} selected={size === defaultLimit}>{size}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+    </div>
+  );
+}
+
+// Client-side pagination JavaScript (included once in layout)
+const paginationScript = `
+(function() {
+  class TablePaginator {
+    constructor(tableId, defaultLimit = 20) {
+      this.tableId = tableId;
+      this.table = document.getElementById(tableId);
+      this.pagination = document.getElementById(tableId + '-pagination');
+      if (!this.table || !this.pagination) return;
+
+      this.tbody = this.table.querySelector('tbody');
+      this.rows = Array.from(this.tbody.querySelectorAll('tr[data-row]'));
+      this.totalItems = this.rows.length;
+      this.currentPage = 1;
+      this.limit = parseInt(this.pagination.dataset.limit) || defaultLimit;
+
+      this.setupControls();
+      this.render();
+    }
+
+    get totalPages() {
+      return Math.ceil(this.totalItems / this.limit);
+    }
+
+    setupControls() {
+      this.pagination.querySelector('[data-action="first"]').onclick = () => this.goTo(1);
+      this.pagination.querySelector('[data-action="prev"]').onclick = () => this.goTo(this.currentPage - 1);
+      this.pagination.querySelector('[data-action="next"]').onclick = () => this.goTo(this.currentPage + 1);
+      this.pagination.querySelector('[data-action="last"]').onclick = () => this.goTo(this.totalPages);
+      this.pagination.querySelector('[data-action="limit"]').onchange = (e) => {
+        this.limit = parseInt(e.target.value);
+        this.currentPage = 1;
+        this.render();
+      };
+    }
+
+    goTo(page) {
+      this.currentPage = Math.max(1, Math.min(page, this.totalPages));
+      this.render();
+    }
+
+    render() {
+      const start = (this.currentPage - 1) * this.limit;
+      const end = start + this.limit;
+
+      // Show/hide rows
+      this.rows.forEach((row, i) => {
+        row.style.display = (i >= start && i < end) ? '' : 'none';
+      });
+
+      // Update info
+      const info = this.pagination.querySelector('.pagination-info');
+      const startItem = this.totalItems > 0 ? start + 1 : 0;
+      const endItem = Math.min(end, this.totalItems);
+      info.textContent = 'Showing ' + startItem + '–' + endItem + ' of ' + this.totalItems;
+
+      // Update buttons
+      const firstBtn = this.pagination.querySelector('[data-action="first"]');
+      const prevBtn = this.pagination.querySelector('[data-action="prev"]');
+      const nextBtn = this.pagination.querySelector('[data-action="next"]');
+      const lastBtn = this.pagination.querySelector('[data-action="last"]');
+
+      firstBtn.disabled = this.currentPage <= 1;
+      prevBtn.disabled = this.currentPage <= 1;
+      nextBtn.disabled = this.currentPage >= this.totalPages;
+      lastBtn.disabled = this.currentPage >= this.totalPages;
+
+      firstBtn.classList.toggle('disabled', this.currentPage <= 1);
+      prevBtn.classList.toggle('disabled', this.currentPage <= 1);
+      nextBtn.classList.toggle('disabled', this.currentPage >= this.totalPages);
+      lastBtn.classList.toggle('disabled', this.currentPage >= this.totalPages);
+
+      // Update page numbers
+      this.renderPageNumbers();
+
+      // Hide pagination if only one page
+      this.pagination.style.display = this.totalPages <= 1 ? 'none' : '';
+    }
+
+    renderPageNumbers() {
+      const container = this.pagination.querySelector('.pagination-pages');
+      container.innerHTML = '';
+
+      const pages = [];
+      for (let i = 1; i <= this.totalPages; i++) {
+        if (i === 1 || i === this.totalPages || (i >= this.currentPage - 2 && i <= this.currentPage + 2)) {
+          pages.push(i);
+        } else if (pages[pages.length - 1] !== '...') {
+          pages.push('...');
+        }
+      }
+
+      pages.forEach(p => {
+        if (p === '...') {
+          const span = document.createElement('span');
+          span.className = 'pagination-ellipsis';
+          span.textContent = '…';
+          container.appendChild(span);
+        } else {
+          const btn = document.createElement('button');
+          btn.className = 'pagination-btn' + (p === this.currentPage ? ' current' : '');
+          btn.textContent = p;
+          btn.onclick = () => this.goTo(p);
+          container.appendChild(btn);
+        }
+      });
+    }
+  }
+
+  // Initialize all paginators when DOM is ready
+  window.initPaginator = function(tableId, limit) {
+    new TablePaginator(tableId, limit);
+  };
+})();
+`;
+
 function getChainFromQuery(c: any): ChainName {
   const chain = c.req.query('chain') as string;
   if (chain === 'polygon') return 'polygon';
   if (chain === 'all') return 'all';
   return 'ethereum';
-}
-
-function addChainToUrl(url: string, chain: ChainName): string {
-  const separator = url.includes('?') ? '&' : '?';
-  return `${url}${separator}chain=${chain}`;
 }
 
 function getChainLabel(chain: ChainName): string {
@@ -70,8 +207,20 @@ app.use('*', jsxRenderer(({ children }) => {
           th { background: #f5f5f5; }
           .chart-container { position: relative; height: 400px; margin: 1rem 0; }
           .chain-badge { display: inline-block; padding: 0.25rem 0.5rem; background: #e0e0e0; border-radius: 4px; font-size: 0.85rem; margin-left: 0.5rem; }
+          .pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; margin: 1.5rem 0; padding: 1rem 0; border-top: 1px solid #eee; }
+          .pagination-info { color: #666; font-size: 0.9rem; }
+          .pagination-controls { display: flex; align-items: center; gap: 0.25rem; }
+          .pagination-pages { display: flex; align-items: center; gap: 0.25rem; margin: 0 0.5rem; }
+          .pagination-btn { padding: 0.4rem 0.75rem; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; color: #0066cc; font-size: 0.9rem; background: #fff; cursor: pointer; }
+          .pagination-btn:hover:not(.disabled):not(.current) { background: #f0f0f0; border-color: #bbb; }
+          .pagination-btn.current { background: #0066cc; color: #fff; border-color: #0066cc; }
+          .pagination-btn.disabled { color: #999; cursor: not-allowed; background: #f9f9f9; }
+          .pagination-ellipsis { padding: 0 0.5rem; color: #666; }
+          .pagination-size { margin-left: auto; }
+          .pagination-size select { padding: 0.4rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem; }
         `}</style>
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script dangerouslySetInnerHTML={{ __html: paginationScript }} />
         <script dangerouslySetInnerHTML={{ __html: `
           // Get chain from URL params
           const urlParams = new URLSearchParams(window.location.search);
@@ -144,6 +293,7 @@ app.use('*', jsxRenderer(({ children }) => {
 app.get('/', async (c) => {
   try {
     const chain = getChainFromQuery(c);
+
     const baseQuery = db.select({
       date: schema.dailyFlows.date,
       totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
@@ -152,21 +302,20 @@ app.get('/', async (c) => {
     })
       .from(schema.dailyFlows);
 
+    // Fetch all data for client-side pagination
     const flows = chain === 'all'
       ? await baseQuery
           .groupBy(schema.dailyFlows.date)
           .orderBy(desc(schema.dailyFlows.date))
-          .limit(30)
       : await baseQuery
           .where(eq(schema.dailyFlows.chain, chain))
           .groupBy(schema.dailyFlows.date)
-          .orderBy(desc(schema.dailyFlows.date))
-          .limit(30);
+          .orderBy(desc(schema.dailyFlows.date));
 
     return c.render(
     <section>
       <h2>Daily Overview (All Tokens) <span class="chain-badge">{getChainLabel(chain)}</span></h2>
-      <table>
+      <table id="overview-table">
         <thead>
           <tr><th>Date</th><th>Deposits</th><th>Withdrawals</th><th>Net Flow</th></tr>
         </thead>
@@ -174,8 +323,8 @@ app.get('/', async (c) => {
           {flows.length === 0 ? (
             <tr><td colSpan={4}>No data yet. Run the indexer and analytics first.</td></tr>
           ) : (
-            flows.map((row) => (
-              <tr>
+            flows.map((row, idx) => (
+              <tr data-row={idx}>
                 <td>{row.date}</td>
                 <td>{row.totalDeposits?.toFixed(2)}</td>
                 <td>{row.totalWithdrawals?.toFixed(2)}</td>
@@ -185,6 +334,8 @@ app.get('/', async (c) => {
           )}
         </tbody>
       </table>
+      <ClientPagination tableId="overview-table" defaultLimit={20} />
+      <script dangerouslySetInnerHTML={{ __html: `initPaginator('overview-table', 20);` }} />
     </section>
     );
   } catch (error) {
@@ -197,6 +348,7 @@ app.get('/', async (c) => {
 app.get('/tokens', async (c) => {
   const chain = getChainFromQuery(c);
 
+  // Fetch all tokens for client-side pagination
   const tokenStats = chain === 'all'
     ? await db.select({
         id: schema.tokens.id,
@@ -226,7 +378,7 @@ app.get('/tokens', async (c) => {
   return c.render(
     <section>
       <h2>Tokens by Deposit Volume <span class="chain-badge">{getChainLabel(chain)}</span></h2>
-      <table>
+      <table id="tokens-table">
         <thead>
           <tr><th>Symbol</th><th>Total Deposits</th><th>Details</th></tr>
         </thead>
@@ -234,16 +386,18 @@ app.get('/tokens', async (c) => {
           {tokenStats.length === 0 ? (
             <tr><td colSpan={3}>No data yet. Run the indexer and analytics first.</td></tr>
           ) : (
-            tokenStats.map((t) => (
-              <tr>
+            tokenStats.map((t, idx) => (
+              <tr data-row={idx}>
                 <td>{t.symbol || 'Unknown'}</td>
                 <td>{t.totalDeposits?.toFixed(2) || '0'}</td>
-                <td><a href={`/tokens/${t.id}`}>View</a></td>
+                <td><a href={`/tokens/${t.id}?chain=${chain}`}>View</a></td>
               </tr>
             ))
           )}
         </tbody>
       </table>
+      <ClientPagination tableId="tokens-table" defaultLimit={20} />
+      <script dangerouslySetInnerHTML={{ __html: `initPaginator('tokens-table', 20);` }} />
     </section>
   );
 });
@@ -257,6 +411,7 @@ app.get('/tokens/:id', async (c) => {
     .where(eq(schema.tokens.id, tokenId))
     .get();
 
+  // Fetch all flows for client-side pagination
   const flows = chain === 'all'
     ? await db.select({
         date: schema.dailyFlows.date,
@@ -268,20 +423,19 @@ app.get('/tokens/:id', async (c) => {
         .where(eq(schema.dailyFlows.tokenId, tokenId))
         .groupBy(schema.dailyFlows.date)
         .orderBy(desc(schema.dailyFlows.date))
-        .limit(30)
     : await db.select()
         .from(schema.dailyFlows)
         .where(and(
           eq(schema.dailyFlows.tokenId, tokenId),
           eq(schema.dailyFlows.chain, chain)
         ))
-        .orderBy(desc(schema.dailyFlows.date))
-        .limit(30);
+        .orderBy(desc(schema.dailyFlows.date));
 
   return c.render(
     <section>
       <h2>{token?.symbol || 'Token'} Daily Flows <span class="chain-badge">{getChainLabel(chain)}</span></h2>
-      <table>
+      <p><a href={`/tokens?chain=${chain}`}>← Back to Tokens</a></p>
+      <table id="token-detail-table">
         <thead>
           <tr><th>Date</th><th>Deposits</th><th>Withdrawals</th><th>Net</th></tr>
         </thead>
@@ -289,8 +443,8 @@ app.get('/tokens/:id', async (c) => {
           {flows.length === 0 ? (
             <tr><td colSpan={4}>No data for this token.</td></tr>
           ) : (
-            flows.map((row) => (
-              <tr>
+            flows.map((row, idx) => (
+              <tr data-row={idx}>
                 <td>{row.date}</td>
                 <td>{row.totalDeposits.toFixed(2)}</td>
                 <td>{row.totalWithdrawals.toFixed(2)}</td>
@@ -300,6 +454,8 @@ app.get('/tokens/:id', async (c) => {
           )}
         </tbody>
       </table>
+      <ClientPagination tableId="token-detail-table" defaultLimit={20} />
+      <script dangerouslySetInnerHTML={{ __html: `initPaginator('token-detail-table', 20);` }} />
     </section>
   );
 });
@@ -308,6 +464,7 @@ app.get('/tokens/:id', async (c) => {
 app.get('/relayers', async (c) => {
   const chain = getChainFromQuery(c);
 
+  // Fetch all stats for client-side pagination
   const stats = chain === 'all'
     ? await db.select({
         date: schema.relayerStatsDaily.date,
@@ -319,18 +476,16 @@ app.get('/relayers', async (c) => {
         .from(schema.relayerStatsDaily)
         .groupBy(schema.relayerStatsDaily.date)
         .orderBy(desc(schema.relayerStatsDaily.date))
-        .limit(30)
     : await db.select()
         .from(schema.relayerStatsDaily)
         .where(eq(schema.relayerStatsDaily.chain, chain))
-        .orderBy(desc(schema.relayerStatsDaily.date))
-        .limit(30);
+        .orderBy(desc(schema.relayerStatsDaily.date));
 
   return c.render(
     <section>
       <h2>Relayer Concentration Metrics <span class="chain-badge">{getChainLabel(chain)}</span></h2>
       <p><em>Aggregate statistics only. No individual relayer data exposed.</em></p>
-      <table>
+      <table id="relayers-table">
         <thead>
           <tr><th>Date</th><th>Active Relayers</th><th>Top 5 Share</th><th>HHI</th><th>Tx Count</th></tr>
         </thead>
@@ -338,8 +493,8 @@ app.get('/relayers', async (c) => {
           {stats.length === 0 ? (
             <tr><td colSpan={5}>No data yet. Run the indexer and analytics first.</td></tr>
           ) : (
-            stats.map((row) => (
-              <tr>
+            stats.map((row, idx) => (
+              <tr data-row={idx}>
                 <td>{row.date}</td>
                 <td>{row.numActiveRelayers}</td>
                 <td>{(row.top5Share * 100).toFixed(1)}%</td>
@@ -350,6 +505,8 @@ app.get('/relayers', async (c) => {
           )}
         </tbody>
       </table>
+      <ClientPagination tableId="relayers-table" defaultLimit={20} />
+      <script dangerouslySetInnerHTML={{ __html: `initPaginator('relayers-table', 20);` }} />
     </section>
   );
 });
