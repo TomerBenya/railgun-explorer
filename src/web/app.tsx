@@ -237,7 +237,13 @@ interface FilterBarProps {
   showTokenFilter?: boolean;
   showEventTypeFilter?: boolean;
   showMinVolumeFilter?: boolean;
-  tokens?: Array<{ id: number; symbol: string | null }>;
+  tokens?: Array<{ id: number; symbol: string | null; chain: string }>;
+}
+
+// Helper function to format token display name with chain
+function formatTokenDisplay(token: { symbol: string | null; chain: string }): string {
+  const symbol = token.symbol || 'Unknown';
+  return `${symbol} (${token.chain})`;
 }
 
 // FilterBar component
@@ -278,7 +284,7 @@ function FilterBar({ chain, filters, basePath, showTokenFilter, showEventTypeFil
             <select name="tokenId" id="tokenId" class="filter-select">
               <option value="" selected={!filters.tokenId}>All Tokens</option>
               {tokens.map(t => (
-                <option value={t.id} selected={t.id === filters.tokenId}>{t.symbol || 'Unknown'}</option>
+                <option value={t.id} selected={t.id === filters.tokenId}>{formatTokenDisplay(t)}</option>
               ))}
             </select>
           </div>
@@ -297,14 +303,14 @@ function FilterBar({ chain, filters, basePath, showTokenFilter, showEventTypeFil
 
         {showMinVolumeFilter && (
           <div class="filter-group">
-            <label for="minVolume">Min Volume:</label>
+            <label for="minVolume">Min Tx Count:</label>
             <input
               type="number"
               name="minVolume"
               id="minVolume"
               value={filters.minVolume || ''}
               placeholder="0"
-              step="0.01"
+              step="1"
               min="0"
               class="filter-input"
             />
@@ -491,12 +497,12 @@ app.get('/', async (c) => {
     const chain = getChainFromQuery(c);
     const filters = getFiltersFromQuery(c);
 
-    // Fetch tokens for the filter dropdown
+    // Fetch tokens for the filter dropdown (include chain for display)
     const allTokens = chain === 'all'
-      ? await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol })
+      ? await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol, chain: schema.tokens.chain })
           .from(schema.tokens)
           .orderBy(schema.tokens.symbol)
-      : await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol })
+      : await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol, chain: schema.tokens.chain })
           .from(schema.tokens)
           .where(eq(schema.tokens.chain, chain))
           .orderBy(schema.tokens.symbol);
@@ -540,9 +546,14 @@ app.get('/', async (c) => {
     const showDeposits = filters.eventType === 'all' || filters.eventType === 'deposits';
     const showWithdrawals = filters.eventType === 'all' || filters.eventType === 'withdrawals';
 
+    // Get selected token info for display
+    const selectedToken = filters.tokenId
+      ? allTokens.find(t => t.id === filters.tokenId)
+      : null;
+
     return c.render(
     <section>
-      <h2>Daily Overview {filters.tokenId ? '' : '(All Tokens)'} <span class="chain-badge">{getChainLabel(chain)}</span></h2>
+      <h2>Daily Overview {selectedToken ? `(${formatTokenDisplay(selectedToken)})` : '(All Tokens)'} <span class="chain-badge">{getChainLabel(chain)}</span></h2>
 
       <FilterBar
         chain={chain}
@@ -552,6 +563,21 @@ app.get('/', async (c) => {
         showEventTypeFilter={true}
         tokens={allTokens}
       />
+
+      {!filters.tokenId && (
+        <div style={{
+          background: '#e7f3ff',
+          border: '1px solid #b3d7ff',
+          borderRadius: '8px',
+          padding: '1rem',
+          marginBottom: '1rem',
+          fontSize: '0.9em'
+        }}>
+          <strong>Note:</strong> When viewing "All Tokens", volume numbers represent the sum of raw token amounts
+          across different tokens (e.g., USDC + WETH), which is not a meaningful comparison.
+          Select a specific token for accurate volume analysis.
+        </div>
+      )}
 
       <table id="overview-table">
         <thead>
@@ -604,40 +630,47 @@ app.get('/tokens', async (c) => {
     joinConditions.push(lte(schema.dailyFlows.date, filters.endDate));
   }
 
-  // Fetch all tokens with filtered stats
+  // Fetch all tokens with filtered stats - ranked by transaction count (not token amount)
   const tokenStatsQuery = chain === 'all'
     ? db.select({
         id: schema.tokens.id,
         symbol: schema.tokens.symbol,
+        chain: schema.tokens.chain,
         address: schema.tokens.address,
+        txCount: sql<number>`sum(${schema.dailyFlows.depositTxCount} + ${schema.dailyFlows.withdrawalTxCount})`,
         totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
       })
         .from(schema.tokens)
         .leftJoin(schema.dailyFlows, and(...joinConditions))
         .groupBy(schema.tokens.id)
-        .orderBy(desc(sql`sum(${schema.dailyFlows.totalDeposits})`))
+        .orderBy(desc(sql`sum(${schema.dailyFlows.depositTxCount} + ${schema.dailyFlows.withdrawalTxCount})`))
     : db.select({
         id: schema.tokens.id,
         symbol: schema.tokens.symbol,
+        chain: schema.tokens.chain,
         address: schema.tokens.address,
+        txCount: sql<number>`sum(${schema.dailyFlows.depositTxCount} + ${schema.dailyFlows.withdrawalTxCount})`,
         totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
       })
         .from(schema.tokens)
         .leftJoin(schema.dailyFlows, and(...joinConditions))
         .where(eq(schema.tokens.chain, chain))
         .groupBy(schema.tokens.id)
-        .orderBy(desc(sql`sum(${schema.dailyFlows.totalDeposits})`));
+        .orderBy(desc(sql`sum(${schema.dailyFlows.depositTxCount} + ${schema.dailyFlows.withdrawalTxCount})`));
 
   const tokenStats = await tokenStatsQuery;
 
-  // Apply min volume filter (client-side since it's on aggregated data)
+  // Apply min transaction count filter
   const filteredTokens = filters.minVolume
-    ? tokenStats.filter(t => (t.totalDeposits || 0) >= (filters.minVolume || 0))
+    ? tokenStats.filter(t => (t.txCount || 0) >= (filters.minVolume || 0))
     : tokenStats;
 
   return c.render(
     <section>
-      <h2>Tokens by Deposit Volume <span class="chain-badge">{getChainLabel(chain)}</span></h2>
+      <h2>Most Active Tokens <span class="chain-badge">{getChainLabel(chain)}</span></h2>
+      <p style={{ fontSize: '0.9em', color: '#666', marginTop: '-0.5rem' }}>
+        Ranked by total transaction count (deposits + withdrawals). Token amounts are not comparable across different tokens without USD conversion.
+      </p>
 
       <FilterBar
         chain={chain}
@@ -648,7 +681,7 @@ app.get('/tokens', async (c) => {
 
       <table id="tokens-table">
         <thead>
-          <tr><th>Symbol</th><th>Total Deposits</th><th>Details</th></tr>
+          <tr><th>Token</th><th>Transaction Count</th><th>Details</th></tr>
         </thead>
         <tbody>
           {filteredTokens.length === 0 ? (
@@ -656,8 +689,8 @@ app.get('/tokens', async (c) => {
           ) : (
             filteredTokens.map((t, idx) => (
               <tr data-row={idx}>
-                <td>{t.symbol || 'Unknown'}</td>
-                <td>{t.totalDeposits?.toFixed(2) || '0'}</td>
+                <td>{formatTokenDisplay(t)}</td>
+                <td>{t.txCount || 0}</td>
                 <td><a href={`/tokens/${t.id}?chain=${chain}`}>View</a></td>
               </tr>
             ))
@@ -707,10 +740,20 @@ app.get('/tokens/:id', async (c) => {
     .groupBy(schema.dailyFlows.date)
     .orderBy(desc(schema.dailyFlows.date));
 
+  // Format token display name
+  const tokenDisplayName = token
+    ? formatTokenDisplay({ symbol: token.symbol, chain: token.chain })
+    : 'Unknown Token';
+
   return c.render(
     <section>
-      <h2>{token?.symbol || 'Token'} Daily Flows <span class="chain-badge">{getChainLabel(chain)}</span></h2>
-      <p><a href={`/tokens?chain=${chain}`}>← Back to Tokens</a></p>
+      <h2>{tokenDisplayName} Daily Flows <span class="chain-badge">{getChainLabel(chain)}</span></h2>
+      <p style={{ marginTop: '-0.5rem' }}>
+        <a href={`/tokens?chain=${chain}`}>← Back to Tokens</a>
+      </p>
+      <p style={{ fontSize: '0.85em', color: '#666' }}>
+        Daily deposit and withdrawal volumes in {token?.symbol || 'token'} units.
+      </p>
 
       <FilterBar
         chain={chain}
@@ -720,7 +763,7 @@ app.get('/tokens/:id', async (c) => {
 
       <table id="token-detail-table">
         <thead>
-          <tr><th>Date</th><th>Deposits</th><th>Withdrawals</th><th>Net</th></tr>
+          <tr><th>Date</th><th>Deposits ({token?.symbol || 'units'})</th><th>Withdrawals ({token?.symbol || 'units'})</th><th>Net Flow</th></tr>
         </thead>
         <tbody>
           {flows.length === 0 ? (
@@ -785,6 +828,13 @@ app.get('/relayers', async (c) => {
     <section>
       <h2>Relayer Concentration Metrics <span class="chain-badge">{getChainLabel(chain)}</span></h2>
       <p><em>Aggregate statistics only. No individual relayer data exposed.</em></p>
+      <div style={{ fontSize: '0.85em', color: '#666', marginBottom: '1rem', lineHeight: '1.5' }}>
+        <strong>Metric definitions:</strong>
+        <ul style={{ marginTop: '0.25rem', marginBottom: '0' }}>
+          <li><strong>HHI</strong> (Herfindahl-Hirschman Index): Market concentration measure (0-1). Lower values indicate more distributed relayer usage, which is better for privacy.</li>
+          <li><strong>Top 5 Share</strong>: Percentage of transactions processed by the top 5 most active relayers.</li>
+        </ul>
+      </div>
 
       <FilterBar
         chain={chain}
@@ -1388,24 +1438,50 @@ app.get('/export', (c) => {
 // GET /charts - Charts dashboard with Chart.js
 app.get('/charts', async (c) => {
   const chain = getChainFromQuery(c);
-  // Fetch daily flows for the chart (last 30 days)
-  const baseQuery = db.select({
-    date: schema.dailyFlows.date,
-    totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
-    totalWithdrawals: sql<number>`sum(${schema.dailyFlows.totalWithdrawals})`,
-  })
-    .from(schema.dailyFlows);
+  const filters = getFiltersFromQuery(c);
 
-  const flows = chain === 'all'
-    ? await baseQuery
-        .groupBy(schema.dailyFlows.date)
-        .orderBy(schema.dailyFlows.date)
-        .limit(30)
-    : await baseQuery
-        .where(eq(schema.dailyFlows.chain, chain))
-        .groupBy(schema.dailyFlows.date)
-        .orderBy(schema.dailyFlows.date)
-        .limit(30);
+  // Fetch tokens for the filter dropdown (include chain for display)
+  const allTokens = chain === 'all'
+    ? await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol, chain: schema.tokens.chain })
+        .from(schema.tokens)
+        .orderBy(schema.tokens.symbol)
+    : await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol, chain: schema.tokens.chain })
+        .from(schema.tokens)
+        .where(eq(schema.tokens.chain, chain))
+        .orderBy(schema.tokens.symbol);
+
+  // Get selected token info for display
+  const selectedToken = filters.tokenId
+    ? allTokens.find(t => t.id === filters.tokenId)
+    : null;
+
+  // Only fetch chart data if a specific token is selected
+  let flows: Array<{ date: string; totalDeposits: number | null; totalWithdrawals: number | null }> = [];
+
+  if (filters.tokenId) {
+    // Build conditions for the query
+    const conditions = [eq(schema.dailyFlows.tokenId, filters.tokenId)];
+    if (chain !== 'all') {
+      conditions.push(eq(schema.dailyFlows.chain, chain));
+    }
+    if (filters.startDate) {
+      conditions.push(gte(schema.dailyFlows.date, filters.startDate));
+    }
+    if (filters.endDate) {
+      conditions.push(lte(schema.dailyFlows.date, filters.endDate));
+    }
+
+    flows = await db.select({
+      date: schema.dailyFlows.date,
+      totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
+      totalWithdrawals: sql<number>`sum(${schema.dailyFlows.totalWithdrawals})`,
+    })
+      .from(schema.dailyFlows)
+      .where(and(...conditions))
+      .groupBy(schema.dailyFlows.date)
+      .orderBy(schema.dailyFlows.date)
+      .limit(90);
+  }
 
   // Prepare chart data
   const chartData = {
@@ -1414,71 +1490,109 @@ app.get('/charts', async (c) => {
     withdrawals: flows.map(f => f.totalWithdrawals || 0),
   };
 
+  const tokenLabel = selectedToken ? formatTokenDisplay(selectedToken) : 'Select a token';
+
   return c.render(
     <section>
       <h2>Charts Dashboard <span class="chain-badge">{getChainLabel(chain)}</span></h2>
-      <p>Visual analytics for Railgun aggregate flows.</p>
+      <p>Visual analytics for Railgun flows. Select a specific token to view volume charts.</p>
 
-      <h3>Daily Deposits vs Withdrawals</h3>
-      <div class="chart-container">
-        <canvas id="flowsChart"></canvas>
-      </div>
-
-      {/* Embed chart data as JSON for client-side Chart.js */}
-      <script
-        id="chart-data"
-        type="application/json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(chartData) }}
+      <FilterBar
+        chain={chain}
+        filters={filters}
+        basePath="/charts"
+        showTokenFilter={true}
+        tokens={allTokens}
       />
 
-      {/* Initialize Chart.js */}
-      <script dangerouslySetInnerHTML={{ __html: `
-        (function() {
-          const dataEl = document.getElementById('chart-data');
-          const data = JSON.parse(dataEl.textContent);
+      <h3>Daily Deposits vs Withdrawals {selectedToken && <span style={{ fontWeight: 'normal', fontSize: '0.9em' }}>({tokenLabel})</span>}</h3>
+      <p style={{ fontSize: '0.85em', color: '#666', marginTop: '-0.5rem' }}>
+        Shows daily deposit and withdrawal volumes in token units.
+      </p>
 
-          const ctx = document.getElementById('flowsChart').getContext('2d');
-          new Chart(ctx, {
-            type: 'bar',
-            data: {
-              labels: data.labels,
-              datasets: [
-                {
-                  label: 'Deposits',
-                  data: data.deposits,
-                  backgroundColor: 'rgba(54, 162, 235, 0.6)',
-                  borderColor: 'rgba(54, 162, 235, 1)',
-                  borderWidth: 1
-                },
-                {
-                  label: 'Withdrawals',
-                  data: data.withdrawals,
-                  backgroundColor: 'rgba(255, 99, 132, 0.6)',
-                  borderColor: 'rgba(255, 99, 132, 1)',
-                  borderWidth: 1
-                }
-              ]
-            },
-            options: {
-              responsive: true,
-              maintainAspectRatio: false,
-              scales: {
-                y: {
-                  beginAtZero: true,
-                  title: { display: true, text: 'Volume' }
-                },
-                x: {
-                  title: { display: true, text: 'Date' }
-                }
-              },
-              plugins: {
-                legend: { position: 'top' },
-                title: { display: false }
+      {!filters.tokenId ? (
+        <div style={{
+          background: '#fff3cd',
+          border: '1px solid #ffc107',
+          borderRadius: '8px',
+          padding: '1.5rem',
+          marginBottom: '1.5rem'
+        }}>
+          <strong>Token selection required</strong>
+          <p style={{ margin: '0.5rem 0 0 0' }}>
+            Please select a specific token from the dropdown above to view volume charts.
+            Aggregating volumes across different tokens (e.g., USDC + WETH) produces meaningless
+            numbers since token units are not comparable without USD conversion.
+          </p>
+        </div>
+      ) : (
+        <>
+          <div class="chart-container">
+            <canvas id="flowsChart"></canvas>
+          </div>
+
+          {/* Embed chart data as JSON for client-side Chart.js */}
+          <script
+            id="chart-data"
+            type="application/json"
+            dangerouslySetInnerHTML={{ __html: JSON.stringify(chartData) }}
+          />
+
+          {/* Initialize Chart.js */}
+          <script dangerouslySetInnerHTML={{ __html: `
+            (function() {
+              const dataEl = document.getElementById('chart-data');
+              const data = JSON.parse(dataEl.textContent);
+
+              if (data.labels.length === 0) {
+                document.getElementById('flowsChart').parentElement.innerHTML = '<p style="color: #666; text-align: center; padding: 2rem;">No data available for the selected token and filters.</p>';
+                return;
               }
-            }
-          });
-        })();
-      `}} />
+
+              const ctx = document.getElementById('flowsChart').getContext('2d');
+              new Chart(ctx, {
+                type: 'bar',
+                data: {
+                  labels: data.labels,
+                  datasets: [
+                    {
+                      label: 'Deposits',
+                      data: data.deposits,
+                      backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                      borderColor: 'rgba(54, 162, 235, 1)',
+                      borderWidth: 1
+                    },
+                    {
+                      label: 'Withdrawals',
+                      data: data.withdrawals,
+                      backgroundColor: 'rgba(255, 99, 132, 0.6)',
+                      borderColor: 'rgba(255, 99, 132, 1)',
+                      borderWidth: 1
+                    }
+                  ]
+                },
+                options: {
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  scales: {
+                    y: {
+                      beginAtZero: true,
+                      title: { display: true, text: 'Volume (token units)' }
+                    },
+                    x: {
+                      title: { display: true, text: 'Date' }
+                    }
+                  },
+                  plugins: {
+                    legend: { position: 'top' },
+                    title: { display: false }
+                  }
+                }
+              });
+            })();
+          `}} />
+        </>
+      )}
     </section>
   );
 });
