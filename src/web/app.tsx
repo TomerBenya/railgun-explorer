@@ -2,6 +2,20 @@ import { Hono } from 'hono';
 import { jsxRenderer } from 'hono/jsx-renderer';
 import { db, schema } from '../db/client';
 import { desc, sql, eq, and, gte, lte } from 'drizzle-orm';
+import {
+  getMeanDepositAmountsOverTime,
+  getMeanWithdrawalAmountsOverTime,
+  getDailyVolumeOverTime,
+  getRelayerHHIOverTime,
+  getHourlyActivityHeatmap,
+  getActivityIntensityOverTime,
+  getTopTokensByVolume,
+  getTopTokensByTransactionCount,
+  getTokenDiversityOverTime,
+  getActiveRelayersOverTime,
+  getTop5RelayerShareOverTime,
+  getNetFlowOverTime,
+} from '../analytics/chartData';
 
 type ChainName = 'ethereum' | 'polygon' | 'all';
 type TimePreset = '7d' | '30d' | '90d' | '1y' | 'all' | 'custom';
@@ -198,6 +212,21 @@ function getDateRangeFromPreset(preset: TimePreset): { startDate: string | null;
   return { startDate, endDate };
 }
 
+// Calculate date range from time range string (for charts)
+function getDateRangeFromTimeRange(range: string): { startDate?: string; endDate?: string } {
+  if (range === 'all') return {};
+
+  const now = new Date();
+  const endDate = now.toISOString().split('T')[0];
+  const daysAgo = range === '7d' ? 7 : range === '30d' ? 30 : 90;
+  now.setDate(now.getDate() - daysAgo);
+
+  return {
+    startDate: now.toISOString().split('T')[0],
+    endDate,
+  };
+}
+
 // Parse filter params from query string
 function getFiltersFromQuery(c: any): FilterParams {
   const timePreset = (c.req.query('timePreset') as TimePreset) || 'all';
@@ -237,13 +266,7 @@ interface FilterBarProps {
   showTokenFilter?: boolean;
   showEventTypeFilter?: boolean;
   showMinVolumeFilter?: boolean;
-  tokens?: Array<{ id: number; symbol: string | null; chain: string }>;
-}
-
-// Helper function to format token display name with chain
-function formatTokenDisplay(token: { symbol: string | null; chain: string }): string {
-  const symbol = token.symbol || 'Unknown';
-  return `${symbol} (${token.chain})`;
+  tokens?: Array<{ id: number; symbol: string | null }>;
 }
 
 // FilterBar component
@@ -284,7 +307,7 @@ function FilterBar({ chain, filters, basePath, showTokenFilter, showEventTypeFil
             <select name="tokenId" id="tokenId" class="filter-select">
               <option value="" selected={!filters.tokenId}>All Tokens</option>
               {tokens.map(t => (
-                <option value={t.id} selected={t.id === filters.tokenId}>{formatTokenDisplay(t)}</option>
+                <option value={t.id} selected={t.id === filters.tokenId}>{t.symbol || 'Unknown'}</option>
               ))}
             </select>
           </div>
@@ -303,14 +326,14 @@ function FilterBar({ chain, filters, basePath, showTokenFilter, showEventTypeFil
 
         {showMinVolumeFilter && (
           <div class="filter-group">
-            <label for="minVolume">Min Tx Count:</label>
+            <label for="minVolume">Min Volume:</label>
             <input
               type="number"
               name="minVolume"
               id="minVolume"
               value={filters.minVolume || ''}
               placeholder="0"
-              step="1"
+              step="0.01"
               min="0"
               class="filter-input"
             />
@@ -379,46 +402,165 @@ app.use('*', jsxRenderer(({ children }) => {
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Railgun Transparency Dashboard</title>
         <style>{`
-          body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 1rem; }
-          nav { display: flex; gap: 1rem; margin-bottom: 2rem; border-bottom: 1px solid #ccc; padding-bottom: 1rem; align-items: center; }
-          nav a { text-decoration: none; color: #0066cc; }
+          /* Dark Mode Theme */
+          body {
+            font-family: system-ui, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 1rem;
+            background: #0f1419;
+            color: #e6edf3;
+          }
+          nav {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            border-bottom: 1px solid #30363d;
+            padding-bottom: 1rem;
+            align-items: center;
+          }
+          nav a { text-decoration: none; color: #58a6ff; }
+          nav a:hover { color: #79c0ff; }
           .network-selector { margin-left: auto; display: flex; gap: 0.5rem; align-items: center; }
-          .network-selector label { font-weight: 600; }
-          .network-selector select { padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9rem; cursor: pointer; }
+          .network-selector label { font-weight: 600; color: #e6edf3; }
+          .network-selector select {
+            padding: 0.5rem;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            background: #161b22;
+            color: #e6edf3;
+          }
           table { width: 100%; border-collapse: collapse; }
-          th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #eee; }
-          th { background: #f5f5f5; }
+          th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #30363d; }
+          th { background: #161b22; color: #e6edf3; }
           .chart-container { position: relative; height: 400px; margin: 1rem 0; }
-          .chain-badge { display: inline-block; padding: 0.25rem 0.5rem; background: #e0e0e0; border-radius: 4px; font-size: 0.85rem; margin-left: 0.5rem; }
-          .pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; margin: 1.5rem 0; padding: 1rem 0; border-top: 1px solid #eee; }
-          .pagination-info { color: #666; font-size: 0.9rem; }
+          .chain-badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            margin-left: 0.5rem;
+            color: #7d8590;
+          }
+          .pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; margin: 1.5rem 0; padding: 1rem 0; border-top: 1px solid #30363d; }
+          .pagination-info { color: #7d8590; font-size: 0.9rem; }
           .pagination-controls { display: flex; align-items: center; gap: 0.25rem; }
           .pagination-pages { display: flex; align-items: center; gap: 0.25rem; margin: 0 0.5rem; }
-          .pagination-btn { padding: 0.4rem 0.75rem; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; color: #0066cc; font-size: 0.9rem; background: #fff; cursor: pointer; }
-          .pagination-btn:hover:not(.disabled):not(.current) { background: #f0f0f0; border-color: #bbb; }
-          .pagination-btn.current { background: #0066cc; color: #fff; border-color: #0066cc; }
-          .pagination-btn.disabled { color: #999; cursor: not-allowed; background: #f9f9f9; }
-          .pagination-ellipsis { padding: 0 0.5rem; color: #666; }
+          .pagination-btn { padding: 0.4rem 0.75rem; border: 1px solid #30363d; border-radius: 6px; text-decoration: none; color: #58a6ff; font-size: 0.9rem; background: #161b22; cursor: pointer; }
+          .pagination-btn:hover:not(.disabled):not(.current) { background: #21262d; border-color: #58a6ff; }
+          .pagination-btn.current { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+          .pagination-btn.disabled { color: #484f58; cursor: not-allowed; background: #0d1117; }
+          .pagination-ellipsis { padding: 0 0.5rem; color: #7d8590; }
           .pagination-size { margin-left: auto; }
-          .pagination-size select { padding: 0.4rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem; }
-          .filter-bar { background: #f9f9f9; border: 1px solid #e0e0e0; border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem; }
+          .pagination-size select { padding: 0.4rem; border: 1px solid #30363d; border-radius: 6px; font-size: 0.9rem; background: #161b22; color: #e6edf3; }
+
+          /* Sticky Filter Bar */
+          .filter-bar {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.4);
+          }
           .filter-form { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; }
           .filter-group { display: flex; flex-direction: column; gap: 0.25rem; }
-          .filter-group label { font-size: 0.85rem; font-weight: 500; color: #555; }
-          .filter-select, .filter-input { padding: 0.5rem 0.75rem; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9rem; min-width: 140px; }
-          .filter-select:focus, .filter-input:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.1); }
+          .filter-group label { font-size: 0.85rem; font-weight: 500; color: #7d8590; }
+          .filter-select, .filter-input {
+            padding: 0.5rem 0.75rem;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            min-width: 140px;
+            background: #0d1117;
+            color: #e6edf3;
+          }
+          .filter-select:focus, .filter-input:focus { outline: none; border-color: #1f6feb; box-shadow: 0 0 0 2px rgba(31,111,235,0.3); }
           .filter-input[type="date"] { min-width: 130px; }
           .filter-input[type="number"] { min-width: 100px; }
           .custom-dates { flex-direction: row; align-items: center; gap: 0.5rem; }
           .custom-dates label { margin: 0; }
           .filter-actions { display: flex; gap: 0.5rem; margin-left: auto; }
-          .filter-btn { padding: 0.5rem 1rem; border: 1px solid #0066cc; border-radius: 4px; font-size: 0.9rem; cursor: pointer; text-decoration: none; }
-          .filter-btn:not(.filter-btn-reset) { background: #0066cc; color: #fff; }
-          .filter-btn:not(.filter-btn-reset):hover { background: #0055aa; }
-          .filter-btn-reset { background: #fff; color: #0066cc; }
-          .filter-btn-reset:hover { background: #f0f0f0; }
-          .active-filters { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #e0e0e0; }
-          .active-filter-tag { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.25rem 0.5rem; background: #e8f4fc; border: 1px solid #b3d9f2; border-radius: 4px; font-size: 0.8rem; color: #0066cc; }
+          .filter-btn {
+            padding: 0.5rem 1rem;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s;
+          }
+          .filter-btn:not(.filter-btn-reset) { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+          .filter-btn:not(.filter-btn-reset):hover { background: #388bfd; }
+          .filter-btn-reset { background: #21262d; color: #58a6ff; }
+          .filter-btn-reset:hover { background: #30363d; }
+
+          /* Active Filter Badges */
+          .active-filters {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid #30363d;
+          }
+          .active-filter-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.25rem 0.5rem;
+            background: #1f6feb;
+            border: 1px solid #388bfd;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            color: #fff;
+          }
+
+          /* Card-Based Grid Layout */
+          .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.5rem;
+            margin: 2rem 0;
+          }
+          @media (max-width: 1024px) {
+            .charts-grid { grid-template-columns: 1fr; }
+          }
+          .chart-section {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            transition: transform 0.2s, box-shadow 0.2s;
+          }
+          .chart-section:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.4);
+          }
+          .chart-section h4 { margin-top: 0; color: #e6edf3; font-size: 1.1rem; }
+          .chart-description { font-size: 0.9rem; color: #7d8590; margin-bottom: 1rem; }
+          .chart-section.full-width { grid-column: 1 / -1; }
+
+          /* Heatmap Dark Theme */
+          .chart-heatmap { height: auto; min-height: 600px; }
+          .activity-heatmap { border-collapse: collapse; width: 100%; font-size: 0.85rem; margin: 1rem 0; }
+          .activity-heatmap th, .activity-heatmap td { border: 1px solid #30363d; padding: 0.5rem; text-align: center; }
+          .activity-heatmap th { background: #0d1117; font-weight: 600; color: #e6edf3; }
+          .hour-label { background: #0d1117; font-weight: 500; text-align: right; padding-right: 0.75rem; color: #7d8590; }
+          .heatmap-cell { min-width: 60px; cursor: help; transition: all 0.2s; color: #e6edf3; font-weight: 500; }
+          .heatmap-cell:hover {
+            outline: 2px solid #58a6ff;
+            transform: scale(1.05);
+            z-index: 10;
+          }
         `}</style>
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <script dangerouslySetInnerHTML={{ __html: paginationScript }} />
@@ -437,7 +579,6 @@ app.use('*', jsxRenderer(({ children }) => {
             <a href="/?chain=ethereum" id="nav-overview">Overview</a>
             <a href="/tokens?chain=ethereum" id="nav-tokens">Tokens</a>
             <a href="/relayers?chain=ethereum" id="nav-relayers">Relayers</a>
-            <a href="/relayer-fees?chain=ethereum" id="nav-relayer-fees">Relayer Fees</a>
             <a href="/charts?chain=ethereum" id="nav-charts">Charts</a>
             <a href="/ethics?chain=ethereum" id="nav-ethics">Ethics &amp; Limitations</a>
             <div class="network-selector">
@@ -475,7 +616,7 @@ app.use('*', jsxRenderer(({ children }) => {
             }
             
             // Update all nav links with current chain
-            const pages = ['overview', 'tokens', 'relayers', 'relayer-fees', 'charts', 'export', 'ethics'];
+            const pages = ['overview', 'tokens', 'relayers', 'charts', 'ethics'];
             pages.forEach(page => {
               const link = document.getElementById('nav-' + page);
               if (link) {
@@ -497,12 +638,12 @@ app.get('/', async (c) => {
     const chain = getChainFromQuery(c);
     const filters = getFiltersFromQuery(c);
 
-    // Fetch tokens for the filter dropdown (include chain for display)
+    // Fetch tokens for the filter dropdown
     const allTokens = chain === 'all'
-      ? await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol, chain: schema.tokens.chain })
+      ? await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol })
           .from(schema.tokens)
           .orderBy(schema.tokens.symbol)
-      : await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol, chain: schema.tokens.chain })
+      : await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol })
           .from(schema.tokens)
           .where(eq(schema.tokens.chain, chain))
           .orderBy(schema.tokens.symbol);
@@ -546,14 +687,9 @@ app.get('/', async (c) => {
     const showDeposits = filters.eventType === 'all' || filters.eventType === 'deposits';
     const showWithdrawals = filters.eventType === 'all' || filters.eventType === 'withdrawals';
 
-    // Get selected token info for display
-    const selectedToken = filters.tokenId
-      ? allTokens.find(t => t.id === filters.tokenId)
-      : null;
-
     return c.render(
     <section>
-      <h2>Daily Overview {selectedToken ? `(${formatTokenDisplay(selectedToken)})` : '(All Tokens)'} <span class="chain-badge">{getChainLabel(chain)}</span></h2>
+      <h2>Daily Overview {filters.tokenId ? '' : '(All Tokens)'} <span class="chain-badge">{getChainLabel(chain)}</span></h2>
 
       <FilterBar
         chain={chain}
@@ -563,21 +699,6 @@ app.get('/', async (c) => {
         showEventTypeFilter={true}
         tokens={allTokens}
       />
-
-      {!filters.tokenId && (
-        <div style={{
-          background: '#e7f3ff',
-          border: '1px solid #b3d7ff',
-          borderRadius: '8px',
-          padding: '1rem',
-          marginBottom: '1rem',
-          fontSize: '0.9em'
-        }}>
-          <strong>Note:</strong> When viewing "All Tokens", volume numbers represent the sum of raw token amounts
-          across different tokens (e.g., USDC + WETH), which is not a meaningful comparison.
-          Select a specific token for accurate volume analysis.
-        </div>
-      )}
 
       <table id="overview-table">
         <thead>
@@ -630,47 +751,40 @@ app.get('/tokens', async (c) => {
     joinConditions.push(lte(schema.dailyFlows.date, filters.endDate));
   }
 
-  // Fetch all tokens with filtered stats - ranked by transaction count (not token amount)
+  // Fetch all tokens with filtered stats
   const tokenStatsQuery = chain === 'all'
     ? db.select({
         id: schema.tokens.id,
         symbol: schema.tokens.symbol,
-        chain: schema.tokens.chain,
         address: schema.tokens.address,
-        txCount: sql<number>`sum(${schema.dailyFlows.depositTxCount} + ${schema.dailyFlows.withdrawalTxCount})`,
         totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
       })
         .from(schema.tokens)
         .leftJoin(schema.dailyFlows, and(...joinConditions))
         .groupBy(schema.tokens.id)
-        .orderBy(desc(sql`sum(${schema.dailyFlows.depositTxCount} + ${schema.dailyFlows.withdrawalTxCount})`))
+        .orderBy(desc(sql`sum(${schema.dailyFlows.totalDeposits})`))
     : db.select({
         id: schema.tokens.id,
         symbol: schema.tokens.symbol,
-        chain: schema.tokens.chain,
         address: schema.tokens.address,
-        txCount: sql<number>`sum(${schema.dailyFlows.depositTxCount} + ${schema.dailyFlows.withdrawalTxCount})`,
         totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
       })
         .from(schema.tokens)
         .leftJoin(schema.dailyFlows, and(...joinConditions))
         .where(eq(schema.tokens.chain, chain))
         .groupBy(schema.tokens.id)
-        .orderBy(desc(sql`sum(${schema.dailyFlows.depositTxCount} + ${schema.dailyFlows.withdrawalTxCount})`));
+        .orderBy(desc(sql`sum(${schema.dailyFlows.totalDeposits})`));
 
   const tokenStats = await tokenStatsQuery;
 
-  // Apply min transaction count filter
+  // Apply min volume filter (client-side since it's on aggregated data)
   const filteredTokens = filters.minVolume
-    ? tokenStats.filter(t => (t.txCount || 0) >= (filters.minVolume || 0))
+    ? tokenStats.filter(t => (t.totalDeposits || 0) >= (filters.minVolume || 0))
     : tokenStats;
 
   return c.render(
     <section>
-      <h2>Most Active Tokens <span class="chain-badge">{getChainLabel(chain)}</span></h2>
-      <p style={{ fontSize: '0.9em', color: '#666', marginTop: '-0.5rem' }}>
-        Ranked by total transaction count (deposits + withdrawals). Token amounts are not comparable across different tokens without USD conversion.
-      </p>
+      <h2>Tokens by Deposit Volume <span class="chain-badge">{getChainLabel(chain)}</span></h2>
 
       <FilterBar
         chain={chain}
@@ -681,7 +795,7 @@ app.get('/tokens', async (c) => {
 
       <table id="tokens-table">
         <thead>
-          <tr><th>Token</th><th>Transaction Count</th><th>Details</th></tr>
+          <tr><th>Symbol</th><th>Total Deposits</th><th>Details</th></tr>
         </thead>
         <tbody>
           {filteredTokens.length === 0 ? (
@@ -689,8 +803,8 @@ app.get('/tokens', async (c) => {
           ) : (
             filteredTokens.map((t, idx) => (
               <tr data-row={idx}>
-                <td>{formatTokenDisplay(t)}</td>
-                <td>{t.txCount || 0}</td>
+                <td>{t.symbol || 'Unknown'}</td>
+                <td>{t.totalDeposits?.toFixed(2) || '0'}</td>
                 <td><a href={`/tokens/${t.id}?chain=${chain}`}>View</a></td>
               </tr>
             ))
@@ -740,20 +854,10 @@ app.get('/tokens/:id', async (c) => {
     .groupBy(schema.dailyFlows.date)
     .orderBy(desc(schema.dailyFlows.date));
 
-  // Format token display name
-  const tokenDisplayName = token
-    ? formatTokenDisplay({ symbol: token.symbol, chain: token.chain })
-    : 'Unknown Token';
-
   return c.render(
     <section>
-      <h2>{tokenDisplayName} Daily Flows <span class="chain-badge">{getChainLabel(chain)}</span></h2>
-      <p style={{ marginTop: '-0.5rem' }}>
-        <a href={`/tokens?chain=${chain}`}>← Back to Tokens</a>
-      </p>
-      <p style={{ fontSize: '0.85em', color: '#666' }}>
-        Daily deposit and withdrawal volumes in {token?.symbol || 'token'} units.
-      </p>
+      <h2>{token?.symbol || 'Token'} Daily Flows <span class="chain-badge">{getChainLabel(chain)}</span></h2>
+      <p><a href={`/tokens?chain=${chain}`}>← Back to Tokens</a></p>
 
       <FilterBar
         chain={chain}
@@ -763,7 +867,7 @@ app.get('/tokens/:id', async (c) => {
 
       <table id="token-detail-table">
         <thead>
-          <tr><th>Date</th><th>Deposits ({token?.symbol || 'units'})</th><th>Withdrawals ({token?.symbol || 'units'})</th><th>Net Flow</th></tr>
+          <tr><th>Date</th><th>Deposits</th><th>Withdrawals</th><th>Net</th></tr>
         </thead>
         <tbody>
           {flows.length === 0 ? (
@@ -828,13 +932,6 @@ app.get('/relayers', async (c) => {
     <section>
       <h2>Relayer Concentration Metrics <span class="chain-badge">{getChainLabel(chain)}</span></h2>
       <p><em>Aggregate statistics only. No individual relayer data exposed.</em></p>
-      <div style={{ fontSize: '0.85em', color: '#666', marginBottom: '1rem', lineHeight: '1.5' }}>
-        <strong>Metric definitions:</strong>
-        <ul style={{ marginTop: '0.25rem', marginBottom: '0' }}>
-          <li><strong>HHI</strong> (Herfindahl-Hirschman Index): Market concentration measure (0-1). Lower values indicate more distributed relayer usage, which is better for privacy.</li>
-          <li><strong>Top 5 Share</strong>: Percentage of transactions processed by the top 5 most active relayers.</li>
-        </ul>
-      </div>
 
       <FilterBar
         chain={chain}
@@ -864,191 +961,6 @@ app.get('/relayers', async (c) => {
       </table>
       <ClientPagination tableId="relayers-table" defaultLimit={20} />
       <script dangerouslySetInnerHTML={{ __html: `initPaginator('relayers-table', 20);` }} />
-    </section>
-  );
-});
-
-// GET /relayer-fees - Relayer fee revenue dashboard
-app.get('/relayer-fees', async (c) => {
-  const chain = getChainFromQuery(c);
-
-  // Get daily fee revenue aggregated by relayer and token
-  const feeRevenue = chain === 'all'
-    ? await db.select({
-        date: schema.relayerFeeRevenueDaily.date,
-        chain: schema.relayerFeeRevenueDaily.chain,
-        relayerAddress: schema.relayerFeeRevenueDaily.relayerAddress,
-        tokenSymbol: schema.tokens.symbol,
-        totalFeeNormalized: sql<number>`sum(${schema.relayerFeeRevenueDaily.totalFeeNormalized})`,
-        txCount: sql<number>`sum(${schema.relayerFeeRevenueDaily.txCount})`,
-        avgFeeNormalized: sql<number>`avg(${schema.relayerFeeRevenueDaily.avgFeeNormalized})`,
-      })
-        .from(schema.relayerFeeRevenueDaily)
-        .leftJoin(schema.tokens, eq(schema.relayerFeeRevenueDaily.tokenId, schema.tokens.id))
-        .groupBy(
-          schema.relayerFeeRevenueDaily.date,
-          schema.relayerFeeRevenueDaily.chain,
-          schema.relayerFeeRevenueDaily.relayerAddress,
-          schema.relayerFeeRevenueDaily.tokenId
-        )
-        .orderBy(desc(schema.relayerFeeRevenueDaily.date))
-        .limit(100)
-    : await db.select({
-        date: schema.relayerFeeRevenueDaily.date,
-        relayerAddress: schema.relayerFeeRevenueDaily.relayerAddress,
-        tokenSymbol: schema.tokens.symbol,
-        totalFeeNormalized: schema.relayerFeeRevenueDaily.totalFeeNormalized,
-        txCount: schema.relayerFeeRevenueDaily.txCount,
-        avgFeeNormalized: schema.relayerFeeRevenueDaily.avgFeeNormalized,
-      })
-        .from(schema.relayerFeeRevenueDaily)
-        .leftJoin(schema.tokens, eq(schema.relayerFeeRevenueDaily.tokenId, schema.tokens.id))
-        .where(eq(schema.relayerFeeRevenueDaily.chain, chain))
-        .orderBy(desc(schema.relayerFeeRevenueDaily.date))
-        .limit(100);
-
-  // Get top relayers by total revenue (all time)
-  const topRelayers = chain === 'all'
-    ? await db.select({
-        relayerAddress: schema.relayerFeeRevenueDaily.relayerAddress,
-        chain: schema.relayerFeeRevenueDaily.chain,
-        totalRevenue: sql<number>`sum(${schema.relayerFeeRevenueDaily.totalFeeNormalized})`,
-        totalTxCount: sql<number>`sum(${schema.relayerFeeRevenueDaily.txCount})`,
-      })
-        .from(schema.relayerFeeRevenueDaily)
-        .groupBy(schema.relayerFeeRevenueDaily.relayerAddress, schema.relayerFeeRevenueDaily.chain)
-        .orderBy(desc(sql<number>`sum(${schema.relayerFeeRevenueDaily.totalFeeNormalized})`))
-        .limit(20)
-    : await db.select({
-        relayerAddress: schema.relayerFeeRevenueDaily.relayerAddress,
-        totalRevenue: sql<number>`sum(${schema.relayerFeeRevenueDaily.totalFeeNormalized})`,
-        totalTxCount: sql<number>`sum(${schema.relayerFeeRevenueDaily.txCount})`,
-      })
-        .from(schema.relayerFeeRevenueDaily)
-        .where(eq(schema.relayerFeeRevenueDaily.chain, chain))
-        .groupBy(schema.relayerFeeRevenueDaily.relayerAddress)
-        .orderBy(desc(sql<number>`sum(${schema.relayerFeeRevenueDaily.totalFeeNormalized})`))
-        .limit(20);
-
-  // Get daily totals for chart
-  const dailyTotals = chain === 'all'
-    ? await db.select({
-        date: schema.relayerFeeRevenueDaily.date,
-        chain: schema.relayerFeeRevenueDaily.chain,
-        totalFees: sql<number>`sum(${schema.relayerFeeRevenueDaily.totalFeeNormalized})`,
-        totalTxCount: sql<number>`sum(${schema.relayerFeeRevenueDaily.txCount})`,
-      })
-        .from(schema.relayerFeeRevenueDaily)
-        .groupBy(schema.relayerFeeRevenueDaily.date, schema.relayerFeeRevenueDaily.chain)
-        .orderBy(desc(schema.relayerFeeRevenueDaily.date))
-        .limit(30)
-    : await db.select({
-        date: schema.relayerFeeRevenueDaily.date,
-        totalFees: sql<number>`sum(${schema.relayerFeeRevenueDaily.totalFeeNormalized})`,
-        totalTxCount: sql<number>`sum(${schema.relayerFeeRevenueDaily.txCount})`,
-      })
-        .from(schema.relayerFeeRevenueDaily)
-        .where(eq(schema.relayerFeeRevenueDaily.chain, chain))
-        .groupBy(schema.relayerFeeRevenueDaily.date)
-        .orderBy(desc(schema.relayerFeeRevenueDaily.date))
-        .limit(30);
-
-  return c.render(
-    <section>
-      <h2>Relayer Fee Revenue <span class="chain-badge">{getChainLabel(chain)}</span></h2>
-      <p><em>Total fees collected by relayers for processing withdrawals. Fees are paid in the same token as the withdrawal.</em></p>
-
-      <h3>Daily Fee Revenue</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Date</th>
-            {chain === 'all' && <th>Chain</th>}
-            <th>Total Fees</th>
-            <th>Transactions</th>
-            <th>Avg Fee per Tx</th>
-          </tr>
-        </thead>
-        <tbody>
-          {dailyTotals.length === 0 ? (
-            <tr><td colSpan={chain === 'all' ? 5 : 4}>No data yet. Run analytics:fees first.</td></tr>
-          ) : (
-            dailyTotals.map((row) => (
-              <tr>
-                <td>{row.date}</td>
-                {chain === 'all' && <td>{row.chain}</td>}
-                <td>{row.totalFees?.toFixed(4) || '0.0000'}</td>
-                <td>{row.totalTxCount || 0}</td>
-                <td>{row.totalFees && row.totalTxCount ? (row.totalFees / row.totalTxCount).toFixed(6) : '0.000000'}</td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-
-      <h3>Top Relayers by Revenue</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Relayer Address</th>
-            {chain === 'all' && <th>Chain</th>}
-            <th>Total Revenue</th>
-            <th>Total Transactions</th>
-            <th>Avg Fee per Tx</th>
-          </tr>
-        </thead>
-        <tbody>
-          {topRelayers.length === 0 ? (
-            <tr><td colSpan={chain === 'all' ? 5 : 4}>No data yet. Run analytics:fees first.</td></tr>
-          ) : (
-            topRelayers.map((row) => (
-              <tr>
-                <td style={{ fontFamily: 'monospace', fontSize: '0.85em' }}>
-                  {row.relayerAddress?.substring(0, 10)}...{row.relayerAddress?.substring(34)}
-                </td>
-                {chain === 'all' && <td>{row.chain}</td>}
-                <td>{row.totalRevenue?.toFixed(4) || '0.0000'}</td>
-                <td>{row.totalTxCount || 0}</td>
-                <td>{row.totalRevenue && row.totalTxCount ? (row.totalRevenue / row.totalTxCount).toFixed(6) : '0.000000'}</td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-
-      <h3>Recent Fee Revenue by Relayer & Token</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Date</th>
-            {chain === 'all' && <th>Chain</th>}
-            <th>Relayer</th>
-            <th>Token</th>
-            <th>Total Fees</th>
-            <th>Tx Count</th>
-            <th>Avg Fee</th>
-          </tr>
-        </thead>
-        <tbody>
-          {feeRevenue.length === 0 ? (
-            <tr><td colSpan={chain === 'all' ? 7 : 6}>No data yet. Run analytics:fees first.</td></tr>
-          ) : (
-            feeRevenue.map((row) => (
-              <tr>
-                <td>{row.date}</td>
-                {chain === 'all' && <td>{row.chain}</td>}
-                <td style={{ fontFamily: 'monospace', fontSize: '0.85em' }}>
-                  {row.relayerAddress?.substring(0, 8)}...{row.relayerAddress?.substring(36)}
-                </td>
-                <td>{row.tokenSymbol || 'Unknown'}</td>
-                <td>{row.totalFeeNormalized?.toFixed(4) || '0.0000'}</td>
-                <td>{row.txCount || 0}</td>
-                <td>{row.avgFeeNormalized?.toFixed(6) || '0.000000'}</td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
     </section>
   );
 });
@@ -1435,13 +1347,105 @@ app.get('/export', (c) => {
   );
 });
 
+// Helper function to render heatmap table
+function renderHeatmapTable(data: Array<{ hour: number; dayOfWeek: number; txCount: number }>) {
+  const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const maxCount = Math.max(...data.map(d => d.txCount), 1);
+
+  // Create lookup map
+  const dataMap = new Map<string, number>();
+  data.forEach(d => {
+    dataMap.set(`${d.hour}-${d.dayOfWeek}`, d.txCount);
+  });
+
+  // Helper to format hour (12am, 6am, 12pm, 6pm format)
+  const formatHour = (hour: number): string => {
+    if (hour === 0) return '12am';
+    if (hour < 12) return `${hour}am`;
+    if (hour === 12) return '12pm';
+    return `${hour - 12}pm`;
+  };
+
+  // Helper to get vibrant dark-mode heatmap color
+  const getHeatmapColor = (intensity: number): string => {
+    if (intensity === 0) return '#0d1117';
+    // Vibrant gradient: dark blue -> cyan -> yellow -> orange -> red
+    if (intensity < 0.2) {
+      const t = intensity / 0.2;
+      return `rgb(${Math.round(10 + t * 30)}, ${Math.round(20 + t * 80)}, ${Math.round(60 + t * 140)})`;
+    } else if (intensity < 0.4) {
+      const t = (intensity - 0.2) / 0.2;
+      return `rgb(${Math.round(40 + t * 20)}, ${Math.round(100 + t * 120)}, ${Math.round(200 - t * 50)})`;
+    } else if (intensity < 0.6) {
+      const t = (intensity - 0.4) / 0.2;
+      return `rgb(${Math.round(60 + t * 100)}, ${Math.round(220 - t * 20)}, ${Math.round(150 - t * 100)})`;
+    } else if (intensity < 0.8) {
+      const t = (intensity - 0.6) / 0.2;
+      return `rgb(${Math.round(160 + t * 80)}, ${Math.round(200 - t * 100)}, ${Math.round(50 - t * 30)})`;
+    } else {
+      const t = (intensity - 0.8) / 0.2;
+      return `rgb(${Math.round(240 + t * 15)}, ${Math.round(100 - t * 80)}, ${Math.round(20 - t * 20)})`;
+    }
+  };
+
+  return (
+    <table class="activity-heatmap">
+      <tbody>
+        {/* Reversed so 12am is at top, 11pm at bottom */}
+        {[...Array(24)].reverse().map((_, reverseIdx) => {
+          const hour = 23 - reverseIdx; // 23, 22, 21, ..., 0
+          return (
+            <tr>
+              <td class="hour-label">{formatHour(hour)}</td>
+              {[...Array(7)].map((_, dow) => {
+                const count = dataMap.get(`${hour}-${dow}`) || 0;
+                const intensity = count / maxCount;
+                const color = getHeatmapColor(intensity);
+                return (
+                  <td
+                    class="heatmap-cell"
+                    style={`background-color: ${color}`}
+                    title={`${dayLabels[dow]} ${formatHour(hour)} - ${count} transactions`}
+                  >
+                    {count > 0 ? count : ''}
+                  </td>
+                );
+              })}
+            </tr>
+          );
+        })}
+      </tbody>
+      {/* Day labels at bottom */}
+      <tfoot>
+        <tr>
+          <th></th>
+          {dayLabels.map(day => <th>{day}</th>)}
+        </tr>
+      </tfoot>
+    </table>
+  );
+}
+
 // GET /charts - Charts dashboard with Chart.js
 app.get('/charts', async (c) => {
   const chain = getChainFromQuery(c);
-  const filters = getFiltersFromQuery(c);
+  const timeRange = (c.req.query('timeRange') as '7d'|'30d'|'90d'|'all') || 'all';
+  const tokenIdStr = c.req.query('tokenId');
+  const tokenId = tokenIdStr ? parseInt(tokenIdStr) : null;
 
-  // Fetch tokens for the filter dropdown (include chain for display)
-  const allTokens = chain === 'all'
+  // Token A and Token B for comparison (amount/volume charts)
+  const tokenAStr = c.req.query('tokenA');
+  const tokenBStr = c.req.query('tokenB');
+  const tokenA = tokenAStr ? parseInt(tokenAStr) : null;
+  const tokenB = tokenBStr ? parseInt(tokenBStr) : null;
+
+  // Convert time range to dates
+  const dateRange = getDateRangeFromTimeRange(timeRange);
+  const commonParams = { chain, ...dateRange };
+  const tokenParams = { ...commonParams, tokenId };
+
+  // Fetch tokens for dropdowns with chain info
+  const allTokensRaw = chain === 'all'
     ? await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol, chain: schema.tokens.chain })
         .from(schema.tokens)
         .orderBy(schema.tokens.symbol)
@@ -1450,149 +1454,913 @@ app.get('/charts', async (c) => {
         .where(eq(schema.tokens.chain, chain))
         .orderBy(schema.tokens.symbol);
 
-  // Get selected token info for display
-  const selectedToken = filters.tokenId
-    ? allTokens.find(t => t.id === filters.tokenId)
-    : null;
-
-  // Only fetch chart data if a specific token is selected
-  let flows: Array<{ date: string; totalDeposits: number | null; totalWithdrawals: number | null }> = [];
-
-  if (filters.tokenId) {
-    // Build conditions for the query
-    const conditions = [eq(schema.dailyFlows.tokenId, filters.tokenId)];
-    if (chain !== 'all') {
-      conditions.push(eq(schema.dailyFlows.chain, chain));
-    }
-    if (filters.startDate) {
-      conditions.push(gte(schema.dailyFlows.date, filters.startDate));
-    }
-    if (filters.endDate) {
-      conditions.push(lte(schema.dailyFlows.date, filters.endDate));
-    }
-
-    flows = await db.select({
-      date: schema.dailyFlows.date,
-      totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
-      totalWithdrawals: sql<number>`sum(${schema.dailyFlows.totalWithdrawals})`,
-    })
-      .from(schema.dailyFlows)
-      .where(and(...conditions))
-      .groupBy(schema.dailyFlows.date)
-      .orderBy(schema.dailyFlows.date)
-      .limit(90);
+  // Build token dropdown options with "SYMBOL (chain)" format and aggregate options
+  interface TokenOption {
+    id: number | string;
+    displayName: string;
+    isAggregate: boolean;
   }
+
+  const tokenOptionsMap = new Map<string, { chains: Set<string>; ids: number[] }>();
+
+  // Group tokens by symbol
+  allTokensRaw.forEach(token => {
+    const symbol = token.symbol || 'Unknown';
+    if (!tokenOptionsMap.has(symbol)) {
+      tokenOptionsMap.set(symbol, { chains: new Set(), ids: [] });
+    }
+    const entry = tokenOptionsMap.get(symbol)!;
+    entry.chains.add(token.chain);
+    entry.ids.push(token.id);
+  });
+
+  // Build final token options list
+  const tokenOptions: TokenOption[] = [];
+
+  // Add chain-wide aggregates at the top (if chain='all')
+  if (chain === 'all') {
+    const hasEthereum = allTokensRaw.some(t => t.chain === 'ethereum');
+    const hasPolygon = allTokensRaw.some(t => t.chain === 'polygon');
+
+    if (hasEthereum) {
+      tokenOptions.push({
+        id: 'chain_ethereum',
+        displayName: 'All Ethereum Tokens',
+        isAggregate: true,
+      });
+    }
+    if (hasPolygon) {
+      tokenOptions.push({
+        id: 'chain_polygon',
+        displayName: 'All Polygon Tokens',
+        isAggregate: true,
+      });
+    }
+  }
+
+  // Add symbol-level aggregates and individual tokens
+  const symbolEntries = Array.from(tokenOptionsMap.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+
+  symbolEntries.forEach(([symbol, data]) => {
+    if (data.chains.size > 1) {
+      // Add aggregate option first
+      tokenOptions.push({
+        id: `agg_${symbol}`,
+        displayName: `${symbol} (all)`,
+        isAggregate: true,
+      });
+    }
+    // Add per-chain options
+    const chainsSorted = Array.from(data.chains).sort();
+    chainsSorted.forEach(chainName => {
+      const token = allTokensRaw.find(t => t.symbol === symbol && t.chain === chainName);
+      if (token) {
+        tokenOptions.push({
+          id: token.id,
+          displayName: `${symbol} (${chainName})`,
+          isAggregate: false,
+        });
+      }
+    });
+  });
+
+  // Default tokenA to first non-aggregate token if not specified
+  const defaultTokenA = tokenA || (tokenOptions.find(opt => !opt.isAggregate)?.id as number) || null;
+  const tokenAParams = { ...commonParams, tokenId: defaultTokenA };
+  const tokenBParams = tokenB ? { ...commonParams, tokenId: tokenB } : null;
+
+  // Fetch data for all charts in parallel
+  const fetchPromises = [
+    getMeanDepositAmountsOverTime(tokenAParams),
+    getMeanWithdrawalAmountsOverTime(tokenAParams),
+    getDailyVolumeOverTime(tokenAParams),
+    getRelayerHHIOverTime(commonParams),
+    getHourlyActivityHeatmap(commonParams),
+    getActivityIntensityOverTime(tokenParams),
+    getTopTokensByVolume({ ...commonParams, limit: 10 }),
+    getTopTokensByTransactionCount({ ...commonParams, limit: 10 }),
+    getTokenDiversityOverTime(commonParams),
+    // Chain comparison: fetch both ethereum and polygon for these charts
+    getActiveRelayersOverTime({ ...commonParams, chain: 'ethereum' }),
+    getActiveRelayersOverTime({ ...commonParams, chain: 'polygon' }),
+    getTop5RelayerShareOverTime({ ...commonParams, chain: 'ethereum' }),
+    getTop5RelayerShareOverTime({ ...commonParams, chain: 'polygon' }),
+    getNetFlowOverTime({ ...tokenParams, chain: 'ethereum' }),
+    getNetFlowOverTime({ ...tokenParams, chain: 'polygon' }),
+  ];
+
+  // Add Token B data if comparing
+  if (tokenBParams) {
+    fetchPromises.push(
+      getMeanDepositAmountsOverTime(tokenBParams),
+      getMeanWithdrawalAmountsOverTime(tokenBParams),
+      getDailyVolumeOverTime(tokenBParams)
+    );
+  }
+
+  const results = await Promise.all(fetchPromises);
+
+  const meanDepositsA = results[0] as Awaited<ReturnType<typeof getMeanDepositAmountsOverTime>>;
+  const meanWithdrawalsA = results[1] as Awaited<ReturnType<typeof getMeanWithdrawalAmountsOverTime>>;
+  const dailyVolumeA = results[2] as Awaited<ReturnType<typeof getDailyVolumeOverTime>>;
+  const relayerHHI = results[3] as Awaited<ReturnType<typeof getRelayerHHIOverTime>>;
+  const hourlyActivity = results[4] as Awaited<ReturnType<typeof getHourlyActivityHeatmap>>;
+  const activityIntensity = results[5] as Awaited<ReturnType<typeof getActivityIntensityOverTime>>;
+  const topTokens = results[6] as Awaited<ReturnType<typeof getTopTokensByVolume>>;
+  const topTokensByTxCount = results[7] as Awaited<ReturnType<typeof getTopTokensByTransactionCount>>;
+  const tokenDiversity = results[8] as Awaited<ReturnType<typeof getTokenDiversityOverTime>>;
+  const activeRelayersEth = results[9] as Awaited<ReturnType<typeof getActiveRelayersOverTime>>;
+  const activeRelayersPolygon = results[10] as Awaited<ReturnType<typeof getActiveRelayersOverTime>>;
+  const top5RelayerShareEth = results[11] as Awaited<ReturnType<typeof getTop5RelayerShareOverTime>>;
+  const top5RelayerSharePolygon = results[12] as Awaited<ReturnType<typeof getTop5RelayerShareOverTime>>;
+  const netFlowEth = results[13] as Awaited<ReturnType<typeof getNetFlowOverTime>>;
+  const netFlowPolygon = results[14] as Awaited<ReturnType<typeof getNetFlowOverTime>>;
+  const meanDepositsB = tokenB ? results[15] as Awaited<ReturnType<typeof getMeanDepositAmountsOverTime>> : undefined;
+  const meanWithdrawalsB = tokenB ? results[16] as Awaited<ReturnType<typeof getMeanWithdrawalAmountsOverTime>> : undefined;
+  const dailyVolumeB = tokenB ? results[17] as Awaited<ReturnType<typeof getDailyVolumeOverTime>> : undefined;
+
+  // Get token display names for chart legends
+  const tokenAName = tokenOptions.find(opt => opt.id === defaultTokenA)?.displayName || 'Token A';
+  const tokenBName = tokenB ? tokenOptions.find(opt => opt.id === tokenB)?.displayName || 'Token B' : null;
 
   // Prepare chart data
   const chartData = {
-    labels: flows.map(f => f.date),
-    deposits: flows.map(f => f.totalDeposits || 0),
-    withdrawals: flows.map(f => f.totalWithdrawals || 0),
+    meanAmounts: {
+      labels: meanDepositsA.map(d => d.date),
+      depositsA: meanDepositsA.map(d => d.value),
+      withdrawalsA: meanWithdrawalsA.map(d => d.value),
+      depositsB: meanDepositsB ? meanDepositsB.map(d => d.value) : [],
+      withdrawalsB: meanWithdrawalsB ? meanWithdrawalsB.map(d => d.value) : [],
+      tokenAName,
+      tokenBName,
+      isComparing: !!tokenB,
+    },
+    volume: {
+      labels: dailyVolumeA.map(d => d.date),
+      valuesA: dailyVolumeA.map(d => d.value),
+      valuesB: dailyVolumeB ? dailyVolumeB.map(d => d.value) : [],
+      tokenAName,
+      tokenBName,
+      isComparing: !!tokenB,
+    },
+    hhi: {
+      labels: relayerHHI.map(d => d.date),
+      values: relayerHHI.map(d => d.value),
+    },
+    intensity: {
+      labels: activityIntensity.map(d => d.date),
+      actual: activityIntensity.map(d => d.txCount),
+      movingAvg: activityIntensity.map(d => d.movingAvg),
+    },
+    topTokens: {
+      labels: topTokens.map(t => t.symbol),
+      values: topTokens.map(t => t.totalVolume),
+    },
+    topTokensByTxCount: {
+      labels: topTokensByTxCount.map(t => t.symbol),
+      values: topTokensByTxCount.map(t => t.totalTxCount),
+    },
+    diversity: {
+      labels: tokenDiversity.map(d => d.date),
+      values: tokenDiversity.map(d => d.value),
+    },
+    activeRelayers: {
+      labels: activeRelayersEth.map(d => d.date),
+      ethereum: activeRelayersEth.map(d => d.value),
+      polygon: activeRelayersPolygon.map(d => d.value),
+    },
+    top5Share: {
+      labels: top5RelayerShareEth.map(d => d.date),
+      ethereum: top5RelayerShareEth.map(d => d.value),
+      polygon: top5RelayerSharePolygon.map(d => d.value),
+    },
+    netFlow: {
+      labels: netFlowEth.map(d => d.date),
+      ethereum: netFlowEth.map(d => d.value),
+      polygon: netFlowPolygon.map(d => d.value),
+    },
   };
-
-  const tokenLabel = selectedToken ? formatTokenDisplay(selectedToken) : 'Select a token';
 
   return c.render(
     <section>
       <h2>Charts Dashboard <span class="chain-badge">{getChainLabel(chain)}</span></h2>
-      <p>Visual analytics for Railgun flows. Select a specific token to view volume charts.</p>
+      <p style="color: #7d8590;">Comprehensive visual analytics for Railgun aggregate flows and metrics.</p>
 
-      <FilterBar
-        chain={chain}
-        filters={filters}
-        basePath="/charts"
-        showTokenFilter={true}
-        tokens={allTokens}
-      />
+      {/* Global Filter Bar */}
+      <div class="filter-bar">
+        <form method="get" action="/charts" class="filter-form">
+          <input type="hidden" name="chain" value={chain} />
 
-      <h3>Daily Deposits vs Withdrawals {selectedToken && <span style={{ fontWeight: 'normal', fontSize: '0.9em' }}>({tokenLabel})</span>}</h3>
-      <p style={{ fontSize: '0.85em', color: '#666', marginTop: '-0.5rem' }}>
-        Shows daily deposit and withdrawal volumes in token units.
-      </p>
-
-      {!filters.tokenId ? (
-        <div style={{
-          background: '#fff3cd',
-          border: '1px solid #ffc107',
-          borderRadius: '8px',
-          padding: '1.5rem',
-          marginBottom: '1.5rem'
-        }}>
-          <strong>Token selection required</strong>
-          <p style={{ margin: '0.5rem 0 0 0' }}>
-            Please select a specific token from the dropdown above to view volume charts.
-            Aggregating volumes across different tokens (e.g., USDC + WETH) produces meaningless
-            numbers since token units are not comparable without USD conversion.
-          </p>
-        </div>
-      ) : (
-        <>
-          <div class="chart-container">
-            <canvas id="flowsChart"></canvas>
+          <div class="filter-group">
+            <label for="timeRange">Time Range:</label>
+            <select name="timeRange" id="timeRange" class="filter-select">
+              <option value="7d" selected={timeRange==='7d'}>Last 7 Days</option>
+              <option value="30d" selected={timeRange==='30d'}>Last 30 Days</option>
+              <option value="90d" selected={timeRange==='90d'}>Last 90 Days</option>
+              <option value="all" selected={timeRange==='all'}>All Time</option>
+            </select>
           </div>
 
-          {/* Embed chart data as JSON for client-side Chart.js */}
-          <script
-            id="chart-data"
-            type="application/json"
-            dangerouslySetInnerHTML={{ __html: JSON.stringify(chartData) }}
-          />
+          <div class="filter-group">
+            <label for="tokenId">Token Filter:</label>
+            <select name="tokenId" id="tokenId" class="filter-select">
+              <option value="" selected={!tokenId}>All Tokens</option>
+              {tokenOptions.map(opt => (
+                <option value={typeof opt.id === 'string' ? '' : opt.id} selected={opt.id===tokenId}>
+                  {opt.displayName}
+                </option>
+              ))}
+            </select>
+          </div>
 
-          {/* Initialize Chart.js */}
-          <script dangerouslySetInnerHTML={{ __html: `
-            (function() {
-              const dataEl = document.getElementById('chart-data');
-              const data = JSON.parse(dataEl.textContent);
+          <div class="filter-actions">
+            <button type="submit" class="filter-btn">Apply Filters</button>
+            <a href={`/charts?chain=${chain}`} class="filter-btn filter-btn-reset">Reset</a>
+          </div>
+        </form>
 
-              if (data.labels.length === 0) {
-                document.getElementById('flowsChart').parentElement.innerHTML = '<p style="color: #666; text-align: center; padding: 2rem;">No data available for the selected token and filters.</p>';
-                return;
+        {/* Active Filter Indicators */}
+        {(timeRange !== 'all' || tokenId) && (
+          <div class="active-filters">
+            {timeRange !== 'all' && (
+              <span class="active-filter-tag">
+                Time: {timeRange === '7d' ? 'Last 7 Days' : timeRange === '30d' ? 'Last 30 Days' : 'Last 90 Days'}
+              </span>
+            )}
+            {tokenId && (
+              <span class="active-filter-tag">
+                Token: {tokenOptions.find(opt => opt.id === tokenId)?.displayName || 'Unknown'}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Token Analytics */}
+      <h3 style="color: #e6edf3; margin-top: 2rem;">Token Analytics</h3>
+
+      <div class="charts-grid">
+        <div class="chart-section">
+          <h4>Top Tokens by Transaction Volume (tokens)</h4>
+          <p class="chart-description">
+            Tokens ranked by total units transferred (deposits + withdrawals). Note: Shows token amounts, not USD value—1M SHIB ≠ 1M USDC.
+          </p>
+          <div class="chart-container">
+            <canvas id="topTokensChart"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-section">
+          <h4>Top Tokens by Transaction Count</h4>
+          <p class="chart-description">
+            Tokens ranked by number of transactions. Measures activity independent of transfer size or token value.
+          </p>
+          <div class="chart-container">
+            <canvas id="topTokensByTxCountChart"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-section">
+          <h4>Token Diversity</h4>
+          <p class="chart-description">
+            Number of unique tokens active per day. Higher diversity suggests broader protocol adoption.
+          </p>
+          <div class="chart-container">
+            <canvas id="diversityChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      {/* Amount & Volume Charts - Combined Tile with Comparison */}
+      <h3 style="color: #e6edf3; margin-top: 2rem;">Amount & Volume Analytics</h3>
+
+      <div class="charts-grid">
+        <div class="chart-section full-width">
+          {/* Token Comparison Selector */}
+          <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 1rem; margin-bottom: 1.5rem;">
+            <form method="get" action="/charts" style="display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap;">
+              <input type="hidden" name="chain" value={chain} />
+              <input type="hidden" name="timeRange" value={timeRange} />
+              {tokenId && <input type="hidden" name="tokenId" value={tokenId} />}
+
+              <div class="filter-group" style="flex: 1; min-width: 200px;">
+                <label for="tokenA" style="font-size: 0.85rem; font-weight: 500; color: #7d8590;">Token A (Primary):</label>
+                <select name="tokenA" id="tokenA" class="filter-select" required>
+                  {tokenOptions.filter(opt => !opt.isAggregate || (typeof opt.id === 'string' && opt.id.startsWith('agg_'))).map(opt => (
+                    <option value={opt.id} selected={opt.id===defaultTokenA}>
+                      {opt.displayName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div class="filter-group" style="flex: 1; min-width: 200px;">
+                <label for="tokenB" style="font-size: 0.85rem; font-weight: 500; color: #7d8590;">Compare with (Optional):</label>
+                <select name="tokenB" id="tokenB" class="filter-select">
+                  <option value="" selected={!tokenB}>None</option>
+                  {tokenOptions.filter(opt => (!opt.isAggregate || (typeof opt.id === 'string' && opt.id.startsWith('agg_'))) && opt.id !== defaultTokenA).map(opt => (
+                    <option value={opt.id} selected={opt.id===tokenB}>
+                      {opt.displayName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div class="filter-actions">
+                <button type="submit" class="filter-btn">Update</button>
+              </div>
+            </form>
+          </div>
+
+          {/* Mean Amounts Chart */}
+          <h4>Mean Deposit & Withdrawal Amounts Over Time</h4>
+          <p class="chart-description">
+            Average deposit and withdrawal size in token units. {tokenB ? 'Comparing two tokens side by side.' : 'Shows typical transaction sizes over time.'}
+          </p>
+          <div class="chart-container">
+            <canvas id="meanAmountsChart"></canvas>
+          </div>
+
+          {/* Daily Volume Chart */}
+          <h4 style="margin-top: 2rem;">Daily Volume (Deposits + Withdrawals)</h4>
+          <p class="chart-description">
+            Total token units deposited and withdrawn per day. {tokenB ? 'Comparing volumes for both tokens.' : ''}
+          </p>
+          <div class="chart-container">
+            <canvas id="volumeChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      {/* Relayer Metrics */}
+      <h3 style="color: #e6edf3; margin-top: 2rem;">Relayer Metrics</h3>
+
+      <div class="charts-grid">
+        <div class="chart-section full-width">
+          <h4>Relayer Concentration (HHI) Over Time</h4>
+          <p class="chart-description">
+            Herfindahl-Hirschman Index measuring relayer market concentration. Ranges from 0 (perfectly distributed) to 1 (single relayer monopoly). Values above 0.25 indicate high concentration.
+          </p>
+          <div class="chart-container">
+            <canvas id="hhiChart"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-section">
+          <h4>Active Relayers Over Time</h4>
+          <p class="chart-description">
+            Number of unique relayers processing transactions daily. More relayers indicates healthier decentralization of relay infrastructure.
+          </p>
+          <div class="chart-container">
+            <canvas id="activeRelayersChart"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-section">
+          <h4>Top 5 Relayer Market Share</h4>
+          <p class="chart-description">
+            Percentage of transaction volume handled by the top 5 relayers. Lower values indicate more distributed relay activity.
+          </p>
+          <div class="chart-container">
+            <canvas id="top5ShareChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      {/* Protocol Health */}
+      <h3 style="color: #e6edf3; margin-top: 2rem;">Protocol Health</h3>
+
+      <div class="charts-grid">
+        <div class="chart-section full-width">
+          <h4>Net Flow Over Time</h4>
+          <p class="chart-description">
+            Deposits minus withdrawals. Positive values (green) indicate privacy pool growth; negative values (red) indicate shrinkage. Larger pools provide stronger privacy guarantees.
+          </p>
+          <div class="chart-container">
+            <canvas id="netFlowChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      {/* Activity Patterns */}
+      <h3 style="color: #e6edf3; margin-top: 2rem;">Activity Patterns</h3>
+
+      <div class="charts-grid">
+        <div class="chart-section full-width">
+          <h4>Hourly Activity Heatmap</h4>
+          <p class="chart-description">
+            Transaction distribution by hour and day of week. Darker colors indicate higher activity periods.
+          </p>
+          <div class="chart-container chart-heatmap">
+            {renderHeatmapTable(hourlyActivity)}
+          </div>
+        </div>
+
+        <div class="chart-section">
+          <h4>Activity Intensity</h4>
+          <p class="chart-description">
+            Daily transaction count with 7-day moving average overlay. Shows overall protocol usage trends.
+          </p>
+          <div class="chart-container">
+            <canvas id="intensityChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      {/* Embed chart data */}
+      <script
+        id="chart-data"
+        type="application/json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(chartData) }}
+      />
+
+      {/* Chart rendering scripts */}
+      <script dangerouslySetInnerHTML={{ __html: `
+        (function() {
+          const dataEl = document.getElementById('chart-data');
+          const data = JSON.parse(dataEl.textContent);
+
+          // Helper: Format large numbers (1.2M, 450K, etc.)
+          const formatNumber = (num) => {
+            if (num >= 1e9) return (num / 1e9).toFixed(1) + 'B';
+            if (num >= 1e6) return (num / 1e6).toFixed(1) + 'M';
+            if (num >= 1e3) return (num / 1e3).toFixed(1) + 'K';
+            return num.toFixed(2);
+          };
+
+          // Helper: Format dates (Mar 15 instead of 2025-03-15)
+          const formatDate = (dateStr) => {
+            const date = new Date(dateStr);
+            return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          };
+
+          // Common dark theme chart options
+          const darkThemeOptions = {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                labels: { color: '#e6edf3', font: { size: 12 } }
               }
-
-              const ctx = document.getElementById('flowsChart').getContext('2d');
-              new Chart(ctx, {
-                type: 'bar',
-                data: {
-                  labels: data.labels,
-                  datasets: [
-                    {
-                      label: 'Deposits',
-                      data: data.deposits,
-                      backgroundColor: 'rgba(54, 162, 235, 0.6)',
-                      borderColor: 'rgba(54, 162, 235, 1)',
-                      borderWidth: 1
-                    },
-                    {
-                      label: 'Withdrawals',
-                      data: data.withdrawals,
-                      backgroundColor: 'rgba(255, 99, 132, 0.6)',
-                      borderColor: 'rgba(255, 99, 132, 1)',
-                      borderWidth: 1
-                    }
-                  ]
+            },
+            scales: {
+              x: {
+                ticks: {
+                  color: '#7d8590',
+                  maxRotation: 45,
+                  minRotation: 0,
+                  callback: function(value, index) {
+                    const label = this.getLabelForValue(value);
+                    return formatDate(label);
+                  }
                 },
-                options: {
-                  responsive: true,
-                  maintainAspectRatio: false,
-                  scales: {
-                    y: {
-                      beginAtZero: true,
-                      title: { display: true, text: 'Volume (token units)' }
-                    },
-                    x: {
-                      title: { display: true, text: 'Date' }
+                grid: { color: '#30363d', lineWidth: 0.5 },
+                title: { display: false }
+              },
+              y: {
+                ticks: {
+                  color: '#7d8590',
+                  callback: function(value) {
+                    return formatNumber(value);
+                  }
+                },
+                grid: { color: '#30363d', lineWidth: 0.5 },
+                title: { display: false }
+              }
+            }
+          };
+
+          // Chart 1: Mean Amounts (Line Chart with Comparison Support)
+          const ctx1 = document.getElementById('meanAmountsChart').getContext('2d');
+          const meanAmountsDatasets = [
+            {
+              label: data.meanAmounts.tokenAName + ' Deposits',
+              data: data.meanAmounts.depositsA,
+              borderColor: '#58a6ff',
+              backgroundColor: 'rgba(88, 166, 255, 0.1)',
+              borderWidth: 2,
+              borderDash: [],
+              fill: false,
+              tension: 0.3,
+              pointRadius: 2,
+              pointHoverRadius: 5
+            },
+            {
+              label: data.meanAmounts.tokenAName + ' Withdrawals',
+              data: data.meanAmounts.withdrawalsA,
+              borderColor: '#f85149',
+              backgroundColor: 'rgba(248, 81, 73, 0.1)',
+              borderWidth: 2,
+              borderDash: [],
+              fill: false,
+              tension: 0.3,
+              pointRadius: 2,
+              pointHoverRadius: 5
+            }
+          ];
+
+          if (data.meanAmounts.isComparing) {
+            meanAmountsDatasets.push(
+              {
+                label: data.meanAmounts.tokenBName + ' Deposits',
+                data: data.meanAmounts.depositsB,
+                borderColor: '#56d364',
+                backgroundColor: 'rgba(86, 211, 100, 0.1)',
+                borderWidth: 2,
+                borderDash: [],
+                fill: false,
+                tension: 0.3,
+                pointRadius: 2,
+                pointHoverRadius: 5
+              },
+              {
+                label: data.meanAmounts.tokenBName + ' Withdrawals',
+                data: data.meanAmounts.withdrawalsB,
+                borderColor: '#ffa657',
+                backgroundColor: 'rgba(255, 166, 87, 0.1)',
+                borderWidth: 2,
+                borderDash: [],
+                fill: false,
+                tension: 0.3,
+                pointRadius: 2,
+                pointHoverRadius: 5
+              }
+            );
+          }
+
+          new Chart(ctx1, {
+            type: 'line',
+            data: {
+              labels: data.meanAmounts.labels,
+              datasets: meanAmountsDatasets
+            },
+            options: { ...darkThemeOptions, scales: { ...darkThemeOptions.scales, y: { ...darkThemeOptions.scales.y, beginAtZero: true } } }
+          });
+
+          // Chart 2: Daily Volume (Area Chart with Comparison Support)
+          const ctx2 = document.getElementById('volumeChart').getContext('2d');
+          const volumeDatasets = [
+            {
+              label: data.volume.tokenAName + ' Volume',
+              data: data.volume.valuesA,
+              borderColor: '#56d364',
+              backgroundColor: 'rgba(86, 211, 100, 0.2)',
+              borderWidth: 2,
+              borderDash: [],
+              fill: true,
+              tension: 0.3,
+              pointRadius: 0
+            }
+          ];
+
+          if (data.volume.isComparing) {
+            volumeDatasets.push({
+              label: data.volume.tokenBName + ' Volume',
+              data: data.volume.valuesB,
+              borderColor: '#a371f7',
+              backgroundColor: 'rgba(163, 113, 247, 0.2)',
+              borderWidth: 2,
+              borderDash: [],
+              fill: true,
+              tension: 0.3,
+              pointRadius: 0
+            });
+          }
+
+          new Chart(ctx2, {
+            type: 'line',
+            data: {
+              labels: data.volume.labels,
+              datasets: volumeDatasets
+            },
+            options: { ...darkThemeOptions, scales: { ...darkThemeOptions.scales, y: { ...darkThemeOptions.scales.y, beginAtZero: true } } }
+          });
+
+          // Chart 3: Relayer HHI (Line Chart)
+          const ctx3 = document.getElementById('hhiChart').getContext('2d');
+          new Chart(ctx3, {
+            type: 'line',
+            data: {
+              labels: data.hhi.labels,
+              datasets: [
+                {
+                  label: 'HHI',
+                  data: data.hhi.values,
+                  borderColor: '#a371f7',
+                  backgroundColor: 'rgba(163, 113, 247, 0.1)',
+                  borderWidth: 2,
+                  fill: false,
+                  tension: 0.3,
+                  pointRadius: 2,
+                  pointHoverRadius: 5
+                }
+              ]
+            },
+            options: darkThemeOptions
+          });
+
+          // Chart 4: Activity Intensity (Line Chart with Moving Average)
+          const ctx4 = document.getElementById('intensityChart').getContext('2d');
+          new Chart(ctx4, {
+            type: 'line',
+            data: {
+              labels: data.intensity.labels,
+              datasets: [
+                {
+                  label: 'Daily Tx Count',
+                  data: data.intensity.actual,
+                  borderColor: '#ffa657',
+                  backgroundColor: 'rgba(255, 166, 87, 0.1)',
+                  borderWidth: 2,
+                  fill: false,
+                  tension: 0.3,
+                  pointRadius: 1
+                },
+                {
+                  label: '7-Day MA',
+                  data: data.intensity.movingAvg,
+                  borderColor: '#a371f7',
+                  backgroundColor: 'rgba(163, 113, 247, 0.1)',
+                  borderWidth: 2,
+                  borderDash: [5, 5],
+                  fill: false,
+                  tension: 0.3,
+                  pointRadius: 0
+                }
+              ]
+            },
+            options: { ...darkThemeOptions, scales: { ...darkThemeOptions.scales, y: { ...darkThemeOptions.scales.y, beginAtZero: true } } }
+          });
+
+          // Chart 5: Top Tokens (Horizontal Bar Chart)
+          const ctx5 = document.getElementById('topTokensChart').getContext('2d');
+          new Chart(ctx5, {
+            type: 'bar',
+            data: {
+              labels: data.topTokens.labels,
+              datasets: [
+                {
+                  label: 'Total Volume',
+                  data: data.topTokens.values,
+                  backgroundColor: '#58a6ff',
+                  borderColor: '#1f6feb',
+                  borderWidth: 1
+                }
+              ]
+            },
+            options: {
+              indexAxis: 'y',
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                legend: { display: false }
+              },
+              scales: {
+                x: {
+                  beginAtZero: true,
+                  ticks: { color: '#7d8590', callback: function(value) { return formatNumber(value); } },
+                  grid: { color: '#30363d', lineWidth: 0.5 }
+                },
+                y: {
+                  ticks: { color: '#7d8590' },
+                  grid: { display: false }
+                }
+              }
+            }
+          });
+
+          // Chart 6: Top Tokens by Transaction Count (Horizontal Bar Chart)
+          const ctx6 = document.getElementById('topTokensByTxCountChart').getContext('2d');
+          new Chart(ctx6, {
+            type: 'bar',
+            data: {
+              labels: data.topTokensByTxCount.labels,
+              datasets: [
+                {
+                  label: 'Transaction Count',
+                  data: data.topTokensByTxCount.values,
+                  backgroundColor: '#56d364',
+                  borderColor: '#2ea043',
+                  borderWidth: 1
+                }
+              ]
+            },
+            options: {
+              indexAxis: 'y',
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                legend: { display: false }
+              },
+              scales: {
+                x: {
+                  beginAtZero: true,
+                  ticks: { color: '#7d8590', callback: function(value) { return formatNumber(value); } },
+                  grid: { color: '#30363d', lineWidth: 0.5 }
+                },
+                y: {
+                  ticks: { color: '#7d8590' },
+                  grid: { display: false }
+                }
+              }
+            }
+          });
+
+          // Chart 7: Token Diversity (Line Chart)
+          const ctx7 = document.getElementById('diversityChart').getContext('2d');
+          new Chart(ctx7, {
+            type: 'line',
+            data: {
+              labels: data.diversity.labels,
+              datasets: [
+                {
+                  label: 'Unique Tokens',
+                  data: data.diversity.values,
+                  borderColor: '#f85149',
+                  backgroundColor: 'rgba(248, 81, 73, 0.2)',
+                  borderWidth: 2,
+                  fill: true,
+                  tension: 0.3,
+                  pointRadius: 2,
+                  pointHoverRadius: 5
+                }
+              ]
+            },
+            options: { ...darkThemeOptions, scales: { ...darkThemeOptions.scales, y: { ...darkThemeOptions.scales.y, beginAtZero: true } } }
+          });
+
+          // Chart 8: Active Relayers Over Time (Chain Comparison)
+          const ctx8 = document.getElementById('activeRelayersChart').getContext('2d');
+          new Chart(ctx8, {
+            type: 'line',
+            data: {
+              labels: data.activeRelayers.labels,
+              datasets: [
+                {
+                  label: 'Ethereum',
+                  data: data.activeRelayers.ethereum,
+                  borderColor: '#a371f7',
+                  backgroundColor: 'rgba(163, 113, 247, 0.1)',
+                  borderWidth: 2,
+                  borderDash: [],
+                  fill: false,
+                  tension: 0.3,
+                  pointRadius: 2,
+                  pointHoverRadius: 5
+                },
+                {
+                  label: 'Polygon',
+                  data: data.activeRelayers.polygon,
+                  borderColor: '#56d364',
+                  backgroundColor: 'rgba(86, 211, 100, 0.1)',
+                  borderWidth: 2,
+                  borderDash: [5, 5],
+                  fill: false,
+                  tension: 0.3,
+                  pointRadius: 2,
+                  pointHoverRadius: 5
+                }
+              ]
+            },
+            options: { ...darkThemeOptions, scales: { ...darkThemeOptions.scales, y: { ...darkThemeOptions.scales.y, beginAtZero: true } } }
+          });
+
+          // Chart 9: Top 5 Relayer Share Over Time (Chain Comparison with Percentage)
+          const ctx9 = document.getElementById('top5ShareChart').getContext('2d');
+          new Chart(ctx9, {
+            type: 'line',
+            data: {
+              labels: data.top5Share.labels,
+              datasets: [
+                {
+                  label: 'Ethereum',
+                  data: data.top5Share.ethereum,
+                  borderColor: '#ffa657',
+                  backgroundColor: 'rgba(255, 166, 87, 0.1)',
+                  borderWidth: 2,
+                  borderDash: [],
+                  fill: false,
+                  tension: 0.3,
+                  pointRadius: 2,
+                  pointHoverRadius: 5
+                },
+                {
+                  label: 'Polygon',
+                  data: data.top5Share.polygon,
+                  borderColor: '#58a6ff',
+                  backgroundColor: 'rgba(88, 166, 255, 0.1)',
+                  borderWidth: 2,
+                  borderDash: [5, 5],
+                  fill: false,
+                  tension: 0.3,
+                  pointRadius: 2,
+                  pointHoverRadius: 5
+                }
+              ]
+            },
+            options: {
+              ...darkThemeOptions,
+              scales: {
+                ...darkThemeOptions.scales,
+                y: {
+                  ...darkThemeOptions.scales.y,
+                  beginAtZero: true,
+                  max: 1,
+                  ticks: {
+                    color: '#7d8590',
+                    callback: function(value) {
+                      return (value * 100).toFixed(0) + '%';
                     }
-                  },
-                  plugins: {
-                    legend: { position: 'top' },
-                    title: { display: false }
                   }
                 }
-              });
-            })();
-          `}} />
-        </>
-      )}
+              }
+            }
+          });
+
+          // Chart 10: Net Flow Over Time (Chain Comparison with Positive/Negative Coloring)
+          const ctx10 = document.getElementById('netFlowChart').getContext('2d');
+
+          // Split ethereum data into positive and negative
+          const ethPositive = data.netFlow.ethereum.map(v => v >= 0 ? v : null);
+          const ethNegative = data.netFlow.ethereum.map(v => v < 0 ? v : null);
+
+          // Split polygon data into positive and negative
+          const polyPositive = data.netFlow.polygon.map(v => v >= 0 ? v : null);
+          const polyNegative = data.netFlow.polygon.map(v => v < 0 ? v : null);
+
+          new Chart(ctx10, {
+            type: 'line',
+            data: {
+              labels: data.netFlow.labels,
+              datasets: [
+                {
+                  label: 'Ethereum (Positive)',
+                  data: ethPositive,
+                  borderColor: '#56d364',
+                  backgroundColor: 'rgba(86, 211, 100, 0.2)',
+                  borderWidth: 2,
+                  borderDash: [],
+                  fill: true,
+                  tension: 0.3,
+                  pointRadius: 0,
+                  spanGaps: false
+                },
+                {
+                  label: 'Ethereum (Negative)',
+                  data: ethNegative,
+                  borderColor: '#f85149',
+                  backgroundColor: 'rgba(248, 81, 73, 0.2)',
+                  borderWidth: 2,
+                  borderDash: [],
+                  fill: true,
+                  tension: 0.3,
+                  pointRadius: 0,
+                  spanGaps: false
+                },
+                {
+                  label: 'Polygon (Positive)',
+                  data: polyPositive,
+                  borderColor: '#56d364',
+                  backgroundColor: 'rgba(86, 211, 100, 0.1)',
+                  borderWidth: 2,
+                  borderDash: [5, 5],
+                  fill: true,
+                  tension: 0.3,
+                  pointRadius: 0,
+                  spanGaps: false
+                },
+                {
+                  label: 'Polygon (Negative)',
+                  data: polyNegative,
+                  borderColor: '#f85149',
+                  backgroundColor: 'rgba(248, 81, 73, 0.1)',
+                  borderWidth: 2,
+                  borderDash: [5, 5],
+                  fill: true,
+                  tension: 0.3,
+                  pointRadius: 0,
+                  spanGaps: false
+                }
+              ]
+            },
+            options: {
+              ...darkThemeOptions,
+              scales: {
+                ...darkThemeOptions.scales,
+                y: {
+                  ...darkThemeOptions.scales.y,
+                  ticks: {
+                    color: '#7d8590',
+                    callback: function(value) {
+                      return formatNumber(value);
+                    }
+                  }
+                }
+              }
+            }
+          });
+        })();
+      `}} />
     </section>
   );
 });
