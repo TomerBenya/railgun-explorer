@@ -1454,78 +1454,12 @@ app.get('/charts', async (c) => {
         .where(eq(schema.tokens.chain, chain))
         .orderBy(schema.tokens.symbol);
 
-  // Build token dropdown options with "SYMBOL (chain)" format and aggregate options
-  interface TokenOption {
-    id: number | string;
-    displayName: string;
-    isAggregate: boolean;
-  }
+  // Helper to format token display name
+  const formatToken = (t: { symbol: string | null; chain: string }) =>
+    `${t.symbol || 'Unknown'} (${t.chain})`;
 
-  const tokenOptionsMap = new Map<string, { chains: Set<string>; ids: number[] }>();
-
-  // Group tokens by symbol
-  allTokensRaw.forEach(token => {
-    const symbol = token.symbol || 'Unknown';
-    if (!tokenOptionsMap.has(symbol)) {
-      tokenOptionsMap.set(symbol, { chains: new Set(), ids: [] });
-    }
-    const entry = tokenOptionsMap.get(symbol)!;
-    entry.chains.add(token.chain);
-    entry.ids.push(token.id);
-  });
-
-  // Build final token options list
-  const tokenOptions: TokenOption[] = [];
-
-  // Add chain-wide aggregates at the top (if chain='all')
-  if (chain === 'all') {
-    const hasEthereum = allTokensRaw.some(t => t.chain === 'ethereum');
-    const hasPolygon = allTokensRaw.some(t => t.chain === 'polygon');
-
-    if (hasEthereum) {
-      tokenOptions.push({
-        id: 'chain_ethereum',
-        displayName: 'All Ethereum Tokens',
-        isAggregate: true,
-      });
-    }
-    if (hasPolygon) {
-      tokenOptions.push({
-        id: 'chain_polygon',
-        displayName: 'All Polygon Tokens',
-        isAggregate: true,
-      });
-    }
-  }
-
-  // Add symbol-level aggregates and individual tokens
-  const symbolEntries = Array.from(tokenOptionsMap.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-
-  symbolEntries.forEach(([symbol, data]) => {
-    if (data.chains.size > 1) {
-      // Add aggregate option first
-      tokenOptions.push({
-        id: `agg_${symbol}`,
-        displayName: `${symbol} (all)`,
-        isAggregate: true,
-      });
-    }
-    // Add per-chain options
-    const chainsSorted = Array.from(data.chains).sort();
-    chainsSorted.forEach(chainName => {
-      const token = allTokensRaw.find(t => t.symbol === symbol && t.chain === chainName);
-      if (token) {
-        tokenOptions.push({
-          id: token.id,
-          displayName: `${symbol} (${chainName})`,
-          isAggregate: false,
-        });
-      }
-    });
-  });
-
-  // Default tokenA to first non-aggregate token if not specified
-  const defaultTokenA = tokenA || (tokenOptions.find(opt => !opt.isAggregate)?.id as number) || null;
+  // Default tokenA to first token if not specified
+  const defaultTokenA = tokenA || allTokensRaw[0]?.id || null;
   const tokenAParams = { ...commonParams, tokenId: defaultTokenA };
   const tokenBParams = tokenB ? { ...commonParams, tokenId: tokenB } : null;
 
@@ -1580,8 +1514,10 @@ app.get('/charts', async (c) => {
   const dailyVolumeB = tokenB ? results[17] as Awaited<ReturnType<typeof getDailyVolumeOverTime>> : undefined;
 
   // Get token display names for chart legends
-  const tokenAName = tokenOptions.find(opt => opt.id === defaultTokenA)?.displayName || 'Token A';
-  const tokenBName = tokenB ? tokenOptions.find(opt => opt.id === tokenB)?.displayName || 'Token B' : null;
+  const tokenAData = allTokensRaw.find(t => t.id === defaultTokenA);
+  const tokenAName = tokenAData ? formatToken(tokenAData) : 'Token A';
+  const tokenBData = tokenB ? allTokensRaw.find(t => t.id === tokenB) : null;
+  const tokenBName = tokenBData ? formatToken(tokenBData) : null;
 
   // Prepare chart data
   const chartData = {
@@ -1665,9 +1601,9 @@ app.get('/charts', async (c) => {
             <label for="tokenId">Token Filter:</label>
             <select name="tokenId" id="tokenId" class="filter-select">
               <option value="" selected={!tokenId}>All Tokens</option>
-              {tokenOptions.map(opt => (
-                <option value={typeof opt.id === 'string' ? '' : opt.id} selected={opt.id===tokenId}>
-                  {opt.displayName}
+              {allTokensRaw.map(t => (
+                <option value={t.id} selected={t.id===tokenId}>
+                  {formatToken(t)}
                 </option>
               ))}
             </select>
@@ -1689,7 +1625,7 @@ app.get('/charts', async (c) => {
             )}
             {tokenId && (
               <span class="active-filter-tag">
-                Token: {tokenOptions.find(opt => opt.id === tokenId)?.displayName || 'Unknown'}
+                Token: {allTokensRaw.find(t => t.id === tokenId) ? formatToken(allTokensRaw.find(t => t.id === tokenId)!) : 'Unknown'}
               </span>
             )}
           </div>
@@ -1746,9 +1682,9 @@ app.get('/charts', async (c) => {
               <div class="filter-group" style="flex: 1; min-width: 200px;">
                 <label for="tokenA" style="font-size: 0.85rem; font-weight: 500; color: #7d8590;">Token A (Primary):</label>
                 <select name="tokenA" id="tokenA" class="filter-select" required>
-                  {tokenOptions.filter(opt => !opt.isAggregate || (typeof opt.id === 'string' && opt.id.startsWith('agg_'))).map(opt => (
-                    <option value={opt.id} selected={opt.id===defaultTokenA}>
-                      {opt.displayName}
+                  {allTokensRaw.map(t => (
+                    <option value={t.id} selected={t.id===defaultTokenA}>
+                      {formatToken(t)}
                     </option>
                   ))}
                 </select>
@@ -1758,9 +1694,9 @@ app.get('/charts', async (c) => {
                 <label for="tokenB" style="font-size: 0.85rem; font-weight: 500; color: #7d8590;">Compare with (Optional):</label>
                 <select name="tokenB" id="tokenB" class="filter-select">
                   <option value="" selected={!tokenB}>None</option>
-                  {tokenOptions.filter(opt => (!opt.isAggregate || (typeof opt.id === 'string' && opt.id.startsWith('agg_'))) && opt.id !== defaultTokenA).map(opt => (
-                    <option value={opt.id} selected={opt.id===tokenB}>
-                      {opt.displayName}
+                  {allTokensRaw.filter(t => t.id !== defaultTokenA).map(t => (
+                    <option value={t.id} selected={t.id===tokenB}>
+                      {formatToken(t)}
                     </option>
                   ))}
                 </select>
