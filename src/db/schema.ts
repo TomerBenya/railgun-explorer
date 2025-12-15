@@ -67,6 +67,15 @@ export const relayerStatsDaily = sqliteTable('relayer_stats_daily', {
   pk: primaryKey({ columns: [table.date, table.chain] }),
 }));
 
+// Pre-computed daily token diversity metrics
+export const dailyTokenDiversity = sqliteTable('daily_token_diversity', {
+  date: text('date').notNull(), // "YYYY-MM-DD"
+  chain: text('chain').notNull(),
+  uniqueTokenCount: integer('unique_token_count').notNull().default(0),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.date, table.chain] }),
+}));
+
 // Type exports for use in application code
 export type Metadata = typeof metadata.$inferSelect;
 export type Token = typeof tokens.$inferSelect;
@@ -74,3 +83,4 @@ export type Event = typeof events.$inferSelect;
 export type NewEvent = typeof events.$inferInsert;
 export type DailyFlow = typeof dailyFlows.$inferSelect;
 export type RelayerStatsDaily = typeof relayerStatsDaily.$inferSelect;
+export type DailyTokenDiversity = typeof dailyTokenDiversity.$inferSelect;
