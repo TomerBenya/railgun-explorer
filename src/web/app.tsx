@@ -638,15 +638,25 @@ app.get('/', async (c) => {
     const chain = getChainFromQuery(c);
     const filters = getFiltersFromQuery(c);
 
-    // Fetch tokens for the filter dropdown
+    // Fetch tokens for the filter dropdown, ordered by event count (relevance)
     const allTokens = chain === 'all'
-      ? await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol })
+      ? await db.select({
+          id: schema.tokens.id,
+          symbol: schema.tokens.symbol,
+        })
           .from(schema.tokens)
-          .orderBy(schema.tokens.symbol)
-      : await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol })
+          .leftJoin(schema.events, eq(schema.events.tokenId, schema.tokens.id))
+          .groupBy(schema.tokens.id)
+          .orderBy(desc(sql`COUNT(${schema.events.id})`))
+      : await db.select({
+          id: schema.tokens.id,
+          symbol: schema.tokens.symbol,
+        })
           .from(schema.tokens)
+          .leftJoin(schema.events, and(eq(schema.events.tokenId, schema.tokens.id), eq(schema.events.chain, chain)))
           .where(eq(schema.tokens.chain, chain))
-          .orderBy(schema.tokens.symbol);
+          .groupBy(schema.tokens.id)
+          .orderBy(desc(sql`COUNT(${schema.events.id})`));
 
     // Build conditions array
     const conditions = [];
@@ -1444,15 +1454,27 @@ app.get('/charts', async (c) => {
   const commonParams = { chain, ...dateRange };
   const tokenParams = { ...commonParams, tokenId };
 
-  // Fetch tokens for dropdowns with chain info
+  // Fetch tokens for dropdowns with chain info, ordered by event count (relevance)
   const allTokensRaw = chain === 'all'
-    ? await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol, chain: schema.tokens.chain })
+    ? await db.select({
+        id: schema.tokens.id,
+        symbol: schema.tokens.symbol,
+        chain: schema.tokens.chain,
+      })
         .from(schema.tokens)
-        .orderBy(schema.tokens.symbol)
-    : await db.select({ id: schema.tokens.id, symbol: schema.tokens.symbol, chain: schema.tokens.chain })
+        .leftJoin(schema.events, eq(schema.events.tokenId, schema.tokens.id))
+        .groupBy(schema.tokens.id)
+        .orderBy(desc(sql`COUNT(${schema.events.id})`))
+    : await db.select({
+        id: schema.tokens.id,
+        symbol: schema.tokens.symbol,
+        chain: schema.tokens.chain,
+      })
         .from(schema.tokens)
+        .leftJoin(schema.events, and(eq(schema.events.tokenId, schema.tokens.id), eq(schema.events.chain, chain)))
         .where(eq(schema.tokens.chain, chain))
-        .orderBy(schema.tokens.symbol);
+        .groupBy(schema.tokens.id)
+        .orderBy(desc(sql`COUNT(${schema.events.id})`));
 
   // Helper to format token display name
   const formatToken = (t: { symbol: string | null; chain: string }) =>
