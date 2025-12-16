@@ -303,13 +303,27 @@ function FilterBar({ chain, filters, basePath, showTokenFilter, showEventTypeFil
 
         {showTokenFilter && tokens && (
           <div class="filter-group">
-            <label for="tokenId">Token:</label>
-            <select name="tokenId" id="tokenId" class="filter-select">
-              <option value="" selected={!filters.tokenId}>All Tokens</option>
-              {tokens.map(t => (
-                <option value={t.id} selected={t.id === filters.tokenId}>{t.symbol || 'Unknown'}</option>
-              ))}
-            </select>
+            <label>Token:</label>
+            <div class="searchable-select">
+              <input type="hidden" name="tokenId" value={filters.tokenId || ''} />
+              <input
+                type="text"
+                class="searchable-select-input"
+                placeholder="Search tokens..."
+                value={filters.tokenId ? (tokens.find(t => t.id === filters.tokenId)?.symbol || 'Unknown') : 'All Tokens'}
+                autocomplete="off"
+              />
+              <div class="searchable-select-dropdown">
+                <div class={`searchable-select-option${!filters.tokenId ? ' selected' : ''}`} data-value="">
+                  All Tokens
+                </div>
+                {tokens.map(t => (
+                  <div class={`searchable-select-option${t.id === filters.tokenId ? ' selected' : ''}`} data-value={t.id}>
+                    {t.symbol || 'Unknown'}
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         )}
 
@@ -363,6 +377,192 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 });
+`;
+
+// Client-side script for searchable token dropdowns
+const searchableSelectScript = `
+(function() {
+  class SearchableSelect {
+    constructor(container) {
+      this.container = container;
+      this.hiddenInput = container.querySelector('input[type="hidden"]');
+      this.searchInput = container.querySelector('.searchable-select-input');
+      this.dropdown = container.querySelector('.searchable-select-dropdown');
+      this.options = Array.from(container.querySelectorAll('.searchable-select-option'));
+      this.highlightedIndex = -1;
+      this.isOpen = false;
+
+      this.init();
+    }
+
+    init() {
+      // Click on input opens dropdown
+      this.searchInput.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggle();
+      });
+
+      // Typing filters options
+      this.searchInput.addEventListener('input', () => {
+        this.filter();
+        if (!this.isOpen) this.open();
+      });
+
+      // Keyboard navigation
+      this.searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (!this.isOpen) this.open();
+          this.highlightNext();
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          this.highlightPrev();
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          if (this.highlightedIndex >= 0) {
+            const visible = this.getVisibleOptions();
+            if (visible[this.highlightedIndex]) {
+              this.select(visible[this.highlightedIndex]);
+            }
+          }
+        } else if (e.key === 'Escape') {
+          this.close();
+        }
+      });
+
+      // Click on option selects it
+      this.options.forEach(opt => {
+        opt.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.select(opt);
+        });
+        opt.addEventListener('mouseenter', () => {
+          this.clearHighlight();
+          opt.classList.add('highlighted');
+        });
+        opt.addEventListener('mouseleave', () => {
+          opt.classList.remove('highlighted');
+        });
+      });
+
+      // Click outside closes dropdown
+      document.addEventListener('click', (e) => {
+        if (!this.container.contains(e.target)) {
+          this.close();
+        }
+      });
+    }
+
+    getVisibleOptions() {
+      return this.options.filter(opt => opt.style.display !== 'none');
+    }
+
+    filter() {
+      const search = this.searchInput.value.toLowerCase();
+      let hasVisible = false;
+
+      this.options.forEach(opt => {
+        const text = opt.textContent.toLowerCase();
+        const matches = text.includes(search);
+        opt.style.display = matches ? '' : 'none';
+        if (matches) hasVisible = true;
+      });
+
+      // Show/hide no results message
+      let noResults = this.dropdown.querySelector('.searchable-select-no-results');
+      if (!hasVisible) {
+        if (!noResults) {
+          noResults = document.createElement('div');
+          noResults.className = 'searchable-select-no-results';
+          noResults.textContent = 'No tokens found';
+          this.dropdown.appendChild(noResults);
+        }
+        noResults.style.display = '';
+      } else if (noResults) {
+        noResults.style.display = 'none';
+      }
+
+      this.highlightedIndex = -1;
+      this.clearHighlight();
+    }
+
+    clearHighlight() {
+      this.options.forEach(opt => opt.classList.remove('highlighted'));
+    }
+
+    highlightNext() {
+      const visible = this.getVisibleOptions();
+      if (visible.length === 0) return;
+      this.clearHighlight();
+      this.highlightedIndex = (this.highlightedIndex + 1) % visible.length;
+      visible[this.highlightedIndex].classList.add('highlighted');
+      visible[this.highlightedIndex].scrollIntoView({ block: 'nearest' });
+    }
+
+    highlightPrev() {
+      const visible = this.getVisibleOptions();
+      if (visible.length === 0) return;
+      this.clearHighlight();
+      this.highlightedIndex = this.highlightedIndex <= 0 ? visible.length - 1 : this.highlightedIndex - 1;
+      visible[this.highlightedIndex].classList.add('highlighted');
+      visible[this.highlightedIndex].scrollIntoView({ block: 'nearest' });
+    }
+
+    select(option) {
+      const value = option.dataset.value;
+      const text = option.textContent;
+
+      this.hiddenInput.value = value;
+      this.searchInput.value = text;
+
+      // Update selected state
+      this.options.forEach(opt => opt.classList.remove('selected'));
+      option.classList.add('selected');
+
+      this.close();
+    }
+
+    open() {
+      this.isOpen = true;
+      this.dropdown.classList.add('open');
+      this.searchInput.select();
+    }
+
+    close() {
+      this.isOpen = false;
+      this.dropdown.classList.remove('open');
+      this.highlightedIndex = -1;
+      this.clearHighlight();
+
+      // Reset search to show selected value
+      const selected = this.options.find(opt => opt.classList.contains('selected'));
+      if (selected) {
+        this.searchInput.value = selected.textContent;
+      }
+      this.filter(); // Reset filter to show all
+    }
+
+    toggle() {
+      if (this.isOpen) {
+        this.close();
+      } else {
+        this.open();
+      }
+    }
+  }
+
+  // Initialize all searchable selects
+  window.initSearchableSelects = function() {
+    document.querySelectorAll('.searchable-select').forEach(container => {
+      if (!container.dataset.initialized) {
+        new SearchableSelect(container);
+        container.dataset.initialized = 'true';
+      }
+    });
+  };
+
+  document.addEventListener('DOMContentLoaded', window.initSearchableSelects);
+})();
 `;
 
 const app = new Hono();
@@ -502,6 +702,68 @@ app.use('*', jsxRenderer(({ children }) => {
           .filter-btn-reset { background: #21262d; color: #58a6ff; }
           .filter-btn-reset:hover { background: #30363d; }
 
+          /* Searchable Token Dropdown */
+          .searchable-select {
+            position: relative;
+            min-width: 180px;
+          }
+          .searchable-select-input {
+            width: 100%;
+            padding: 0.5rem 0.75rem;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            background: #0d1117;
+            color: #e6edf3;
+            cursor: pointer;
+          }
+          .searchable-select-input:focus {
+            outline: none;
+            border-color: #1f6feb;
+            box-shadow: 0 0 0 2px rgba(31,111,235,0.3);
+          }
+          .searchable-select-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            max-height: 250px;
+            overflow-y: auto;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            margin-top: 4px;
+            z-index: 1000;
+            display: none;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.4);
+          }
+          .searchable-select-dropdown.open {
+            display: block;
+          }
+          .searchable-select-option {
+            padding: 0.5rem 0.75rem;
+            cursor: pointer;
+            color: #e6edf3;
+            font-size: 0.9rem;
+            border-bottom: 1px solid #21262d;
+          }
+          .searchable-select-option:last-child {
+            border-bottom: none;
+          }
+          .searchable-select-option:hover,
+          .searchable-select-option.highlighted {
+            background: #1f6feb;
+          }
+          .searchable-select-option.selected {
+            background: #238636;
+          }
+          .searchable-select-no-results {
+            padding: 0.75rem;
+            color: #7d8590;
+            font-size: 0.85rem;
+            text-align: center;
+          }
+
           /* Active Filter Badges */
           .active-filters {
             display: flex;
@@ -565,6 +827,7 @@ app.use('*', jsxRenderer(({ children }) => {
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <script dangerouslySetInnerHTML={{ __html: paginationScript }} />
         <script dangerouslySetInnerHTML={{ __html: filterScript }} />
+        <script dangerouslySetInnerHTML={{ __html: searchableSelectScript }} />
         <script dangerouslySetInnerHTML={{ __html: `
           // Get chain from URL params
           const urlParams = new URLSearchParams(window.location.search);
@@ -1620,15 +1883,27 @@ app.get('/charts', async (c) => {
           </div>
 
           <div class="filter-group">
-            <label for="tokenId">Token Filter:</label>
-            <select name="tokenId" id="tokenId" class="filter-select">
-              <option value="" selected={!tokenId}>All Tokens</option>
-              {allTokensRaw.map(t => (
-                <option value={t.id} selected={t.id===tokenId}>
-                  {formatToken(t)}
-                </option>
-              ))}
-            </select>
+            <label>Token Filter:</label>
+            <div class="searchable-select">
+              <input type="hidden" name="tokenId" value={tokenId || ''} />
+              <input
+                type="text"
+                class="searchable-select-input"
+                placeholder="Search tokens..."
+                value={tokenId ? formatToken(allTokensRaw.find(t => t.id === tokenId)!) : 'All Tokens'}
+                autocomplete="off"
+              />
+              <div class="searchable-select-dropdown">
+                <div class={`searchable-select-option${!tokenId ? ' selected' : ''}`} data-value="">
+                  All Tokens
+                </div>
+                {allTokensRaw.map(t => (
+                  <div class={`searchable-select-option${t.id === tokenId ? ' selected' : ''}`} data-value={t.id}>
+                    {formatToken(t)}
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
 
           <div class="filter-actions">
@@ -1702,26 +1977,48 @@ app.get('/charts', async (c) => {
               {tokenId && <input type="hidden" name="tokenId" value={tokenId} />}
 
               <div class="filter-group" style="flex: 1; min-width: 200px;">
-                <label for="tokenA" style="font-size: 0.85rem; font-weight: 500; color: #7d8590;">Token A (Primary):</label>
-                <select name="tokenA" id="tokenA" class="filter-select" required>
-                  {allTokensRaw.map(t => (
-                    <option value={t.id} selected={t.id===defaultTokenA}>
-                      {formatToken(t)}
-                    </option>
-                  ))}
-                </select>
+                <label style="font-size: 0.85rem; font-weight: 500; color: #7d8590;">Token A (Primary):</label>
+                <div class="searchable-select">
+                  <input type="hidden" name="tokenA" value={defaultTokenA || ''} />
+                  <input
+                    type="text"
+                    class="searchable-select-input"
+                    placeholder="Search tokens..."
+                    value={defaultTokenA ? formatToken(allTokensRaw.find(t => t.id === defaultTokenA)!) : 'Select token'}
+                    autocomplete="off"
+                  />
+                  <div class="searchable-select-dropdown">
+                    {allTokensRaw.map(t => (
+                      <div class={`searchable-select-option${t.id === defaultTokenA ? ' selected' : ''}`} data-value={t.id}>
+                        {formatToken(t)}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
 
               <div class="filter-group" style="flex: 1; min-width: 200px;">
-                <label for="tokenB" style="font-size: 0.85rem; font-weight: 500; color: #7d8590;">Compare with (Optional):</label>
-                <select name="tokenB" id="tokenB" class="filter-select">
-                  <option value="" selected={!tokenB}>None</option>
-                  {allTokensRaw.filter(t => t.id !== defaultTokenA).map(t => (
-                    <option value={t.id} selected={t.id===tokenB}>
-                      {formatToken(t)}
-                    </option>
-                  ))}
-                </select>
+                <label style="font-size: 0.85rem; font-weight: 500; color: #7d8590;">Compare with (Optional):</label>
+                <div class="searchable-select">
+                  <input type="hidden" name="tokenB" value={tokenB || ''} />
+                  <input
+                    type="text"
+                    class="searchable-select-input"
+                    placeholder="Search tokens..."
+                    value={tokenB ? formatToken(allTokensRaw.find(t => t.id === tokenB)!) : 'None'}
+                    autocomplete="off"
+                  />
+                  <div class="searchable-select-dropdown">
+                    <div class={`searchable-select-option${!tokenB ? ' selected' : ''}`} data-value="">
+                      None
+                    </div>
+                    {allTokensRaw.filter(t => t.id !== defaultTokenA).map(t => (
+                      <div class={`searchable-select-option${t.id === tokenB ? ' selected' : ''}`} data-value={t.id}>
+                        {formatToken(t)}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
 
               <div class="filter-actions">
