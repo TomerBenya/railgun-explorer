@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "e2d30834-a103-4446-83e4-102495766597",
+  "id": "036afae1-63fb-4bb1-a500-c3378c200d1e",
   "prevId": "7361d64e-2be1-4f6c-b5c5-9e8dfb3e261a",
   "tables": {
     "daily_flows": {
@@ -93,46 +93,6 @@
             "token_id"
           ],
           "name": "daily_flows_date_chain_token_id_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "daily_token_diversity": {
-      "name": "daily_token_diversity",
-      "columns": {
-        "date": {
-          "name": "date",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "chain": {
-          "name": "chain",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "unique_token_count": {
-          "name": "unique_token_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "daily_token_diversity_date_chain_pk": {
-          "columns": [
-            "date",
-            "chain"
-          ],
-          "name": "daily_token_diversity_date_chain_pk"
         }
       },
       "uniqueConstraints": {},
@@ -305,6 +265,99 @@
       "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "relayer_fee_revenue_daily": {
+      "name": "relayer_fee_revenue_daily",
+      "columns": {
+        "date": {
+          "name": "date",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "chain": {
+          "name": "chain",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "relayer_address": {
+          "name": "relayer_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "token_id": {
+          "name": "token_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "total_fee_wei": {
+          "name": "total_fee_wei",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "total_fee_normalized": {
+          "name": "total_fee_normalized",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "tx_count": {
+          "name": "tx_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "avg_fee_normalized": {
+          "name": "avg_fee_normalized",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "relayer_fee_revenue_daily_token_id_tokens_id_fk": {
+          "name": "relayer_fee_revenue_daily_token_id_tokens_id_fk",
+          "tableFrom": "relayer_fee_revenue_daily",
+          "tableTo": "tokens",
+          "columnsFrom": [
+            "token_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "relayer_fee_revenue_daily_date_chain_relayer_address_token_id_pk": {
+          "columns": [
+            "date",
+            "chain",
+            "relayer_address",
+            "token_id"
+          ],
+          "name": "relayer_fee_revenue_daily_date_chain_relayer_address_token_id_pk"
+        }
+      },
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
