@@ -67,6 +67,7 @@ export const relayerStatsDaily = sqliteTable('relayer_stats_daily', {
   pk: primaryKey({ columns: [table.date, table.chain] }),
 }));
 
+<<<<<<< HEAD
 // Pre-computed daily token diversity metrics
 export const dailyTokenDiversity = sqliteTable('daily_token_diversity', {
   date: text('date').notNull(), // "YYYY-MM-DD"
@@ -74,6 +75,20 @@ export const dailyTokenDiversity = sqliteTable('daily_token_diversity', {
   uniqueTokenCount: integer('unique_token_count').notNull().default(0),
 }, (table) => ({
   pk: primaryKey({ columns: [table.date, table.chain] }),
+=======
+// Pre-computed daily relayer fee revenue per relayer and token
+export const relayerFeeRevenueDaily = sqliteTable('relayer_fee_revenue_daily', {
+  date: text('date').notNull(), // "YYYY-MM-DD"
+  chain: text('chain').notNull(), // 'ethereum', 'polygon', 'arbitrum'
+  relayerAddress: text('relayer_address').notNull(),
+  tokenId: integer('token_id').notNull().references(() => tokens.id),
+  totalFeeWei: text('total_fee_wei').notNull(), // Total fees in wei (as string for bigint)
+  totalFeeNormalized: real('total_fee_normalized').notNull().default(0), // Total fees normalized
+  txCount: integer('tx_count').notNull().default(0), // Number of transactions
+  avgFeeNormalized: real('avg_fee_normalized').notNull().default(0), // Average fee per transaction
+}, (table) => ({
+  pk: primaryKey({ columns: [table.date, table.chain, table.relayerAddress, table.tokenId] }),
+>>>>>>> main
 }));
 
 // Type exports for use in application code
@@ -83,4 +98,8 @@ export type Event = typeof events.$inferSelect;
 export type NewEvent = typeof events.$inferInsert;
 export type DailyFlow = typeof dailyFlows.$inferSelect;
 export type RelayerStatsDaily = typeof relayerStatsDaily.$inferSelect;
+<<<<<<< HEAD
 export type DailyTokenDiversity = typeof dailyTokenDiversity.$inferSelect;
+=======
+export type RelayerFeeRevenueDaily = typeof relayerFeeRevenueDaily.$inferSelect;
+>>>>>>> main
