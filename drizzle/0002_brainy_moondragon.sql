@@ -1,4 +1,4 @@
-CREATE TABLE `relayer_fee_revenue_daily` (
+CREATE TABLE IF NOT EXISTS `relayer_fee_revenue_daily` (
 	`date` text NOT NULL,
 	`chain` text NOT NULL,
 	`relayer_address` text NOT NULL,
