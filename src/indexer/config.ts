@@ -3,11 +3,11 @@ import { type Abi } from 'viem';
 // Environment configuration
 export const RPC_URL = process.env.ETH_RPC_URL || 'https://eth.llamarpc.com';
 
-// Start block - March 2023 (~block 16,800,000)
+// Start block - RailgunSmartWallet deployment ~Feb 2023 (block 16,634,349)
 // Can be overridden via START_BLOCK env var
 export const START_BLOCK = process.env.START_BLOCK
   ? BigInt(process.env.START_BLOCK)
-  : 16_800_000n;
+  : 16_634_349n;
 
 // Indexer settings
 export const CONFIRMATION_BLOCKS = 12n;
