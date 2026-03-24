@@ -11,7 +11,7 @@ import { resolveTokenId, clearTokenCache } from './tokenResolver';
 
 const MAX_RETRIES = 5;
 const RETRY_DELAY_MS = 5000;
-const BATCH_DELAY_MS = parseInt(process.env.BATCH_DELAY_MS || '2000'); // Delay between batches to avoid rate limits
+const BATCH_DELAY_MS = parseInt(process.env.BATCH_DELAY_MS || '0'); // 0 for paid RPCs; set to 2000 for public RPCs
 
 const client = createPublicClient({
   chain: mainnet,
@@ -78,125 +78,94 @@ async function getTransactionSender(txHash: string): Promise<string | null> {
 async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
   console.log(`Indexing blocks ${fromBlock} to ${toBlock}...`);
 
-  // Fetch logs from both contracts with retry
+  // Fetch logs from both contracts in parallel
   const [smartWalletLogs, relayLogs] = await withRetry(
     () => Promise.all([
-      client.getLogs({
-        address: CONTRACTS.smartWallet,
-        fromBlock,
-        toBlock,
-      }),
-      client.getLogs({
-        address: CONTRACTS.relay,
-        fromBlock,
-        toBlock,
-      }),
+      client.getLogs({ address: CONTRACTS.smartWallet, fromBlock, toBlock }),
+      client.getLogs({ address: CONTRACTS.relay, fromBlock, toBlock }),
     ]),
     `getLogs(${fromBlock}-${toBlock})`
   );
 
-  // Block timestamps cache for this batch
-  const timestamps = new Map<bigint, number>();
-  // Transaction sender cache for this batch (for relayer identification)
-  const txSenders = new Map<string, string | null>();
+  // Decode all logs first (synchronous)
+  type PendingEvent = {
+    contractName: string;
+    log: typeof smartWalletLogs[number];
+    decoded: ReturnType<typeof decodeSmartWalletEvent>[number];
+    subIndex: number;
+    isWithdrawal: boolean;
+  };
 
-  let totalDecoded = 0;
+  const pending: PendingEvent[] = [];
 
-  // Process SmartWallet events (currently no events from this contract)
   for (const log of smartWalletLogs) {
-    const decodedEvents = decodeSmartWalletEvent(log);
-    if (decodedEvents.length === 0) continue;
-
-    // Get timestamp
-    if (!timestamps.has(log.blockNumber)) {
-      timestamps.set(log.blockNumber, await getBlockTimestamp(log.blockNumber));
-    }
-
-    // Process each decoded event (Shield can have multiple commitments)
-    for (let i = 0; i < decodedEvents.length; i++) {
-      const decoded = decodedEvents[i];
-
-      // Resolve token
-      const tokenId = decoded.tokenAddress
-        ? await resolveTokenId(decoded.tokenAddress)
-        : null;
-
-      // Compute normalized amount
-      let amountNormalized: number | null = null;
-      if (decoded.rawAmountWei && tokenId) {
-        const token = await db.select().from(schema.tokens).where(eq(schema.tokens.id, tokenId)).get();
-        if (token?.decimals) {
-          amountNormalized = Number(BigInt(decoded.rawAmountWei)) / Math.pow(10, token.decimals);
-        }
-      }
-
-      // Insert event (idempotent) - use logIndex + sub-index for multiple events per log
-      await db.insert(schema.events)
-        .values({
-          chain: 'ethereum',
-          txHash: log.transactionHash,
-          logIndex: log.logIndex * 100 + i, // Sub-index for multiple events per log
-          blockNumber: Number(log.blockNumber),
-          blockTimestamp: timestamps.get(log.blockNumber)!,
-          contractName: 'SmartWallet',
-          eventName: decoded.eventName,
-          eventType: decoded.eventType,
-          tokenId,
-          rawAmountWei: decoded.rawAmountWei,
-          amountNormalized,
-          relayerAddress: decoded.relayerAddress,
-          fromAddress: decoded.fromAddress,
-          toAddress: decoded.toAddress,
-          metadataJson: JSON.stringify(decoded.metadata),
-        })
-        .onConflictDoNothing();
-
-      totalDecoded++;
-    }
+    const decoded = decodeSmartWalletEvent(log);
+    decoded.forEach((d, i) => pending.push({ contractName: 'SmartWallet', log, decoded: d, subIndex: i, isWithdrawal: false }));
+  }
+  for (const log of relayLogs) {
+    const decoded = decodeRelayEvent(log);
+    decoded.forEach((d, i) => pending.push({ contractName: 'Relay', log, decoded: d, subIndex: i, isWithdrawal: d.eventType === 'withdrawal' }));
   }
 
-  // Process Relay events (Shield/Unshield)
-  for (const log of relayLogs) {
-    const decodedEvents = decodeRelayEvent(log);
-    if (decodedEvents.length === 0) continue;
+  if (pending.length === 0) {
+    console.log(`  Processed: SmartWallet=${smartWalletLogs.length}, Relay=${relayLogs.length}, Decoded=0`);
+    return;
+  }
 
-    if (!timestamps.has(log.blockNumber)) {
-      timestamps.set(log.blockNumber, await getBlockTimestamp(log.blockNumber));
-    }
+  // Pre-fetch all unique block timestamps in parallel
+  const uniqueBlocks = [...new Set(pending.map(p => p.log.blockNumber))];
+  const timestampEntries = await Promise.all(
+    uniqueBlocks.map(async bn => [bn, await getBlockTimestamp(bn)] as const)
+  );
+  const timestamps = new Map<bigint, number>(timestampEntries);
 
-    for (let i = 0; i < decodedEvents.length; i++) {
-      const decoded = decodedEvents[i];
+  // Pre-fetch all withdrawal tx senders in parallel
+  const withdrawalTxHashes = [...new Set(pending.filter(p => p.isWithdrawal).map(p => p.log.transactionHash))];
+  const senderEntries = await Promise.all(
+    withdrawalTxHashes.map(async h => [h, await getTransactionSender(h)] as const)
+  );
+  const txSenders = new Map<string, string | null>(senderEntries);
 
-      const tokenId = decoded.tokenAddress
-        ? await resolveTokenId(decoded.tokenAddress)
-        : null;
+  // Pre-resolve all unique token addresses in parallel
+  const uniqueTokenAddresses = [...new Set(pending.map(p => p.decoded.tokenAddress).filter((a): a is string => a !== null))];
+  const tokenIdEntries = await Promise.all(
+    uniqueTokenAddresses.map(async addr => [addr, await resolveTokenId(addr)] as const)
+  );
+  const tokenIdMap = new Map<string, number | null>(tokenIdEntries);
+
+  // Fetch decimals for all resolved tokens in parallel
+  const uniqueTokenIds = [...new Set(tokenIdEntries.map(([, id]) => id).filter((id): id is number => id !== null))];
+  const tokenDecimalEntries = await Promise.all(
+    uniqueTokenIds.map(async id => {
+      const token = await db.select().from(schema.tokens).where(eq(schema.tokens.id, id)).get();
+      return [id, token?.decimals ?? null] as const;
+    })
+  );
+  const tokenDecimals = new Map<number, number | null>(tokenDecimalEntries);
+
+  // Insert all events in a single transaction
+  await db.transaction(async (tx) => {
+    for (const { contractName, log, decoded, subIndex, isWithdrawal } of pending) {
+      const tokenId = decoded.tokenAddress ? (tokenIdMap.get(decoded.tokenAddress) ?? null) : null;
+      const decimals = tokenId !== null ? (tokenDecimals.get(tokenId) ?? null) : null;
 
       let amountNormalized: number | null = null;
-      if (decoded.rawAmountWei && tokenId) {
-        const token = await db.select().from(schema.tokens).where(eq(schema.tokens.id, tokenId)).get();
-        if (token?.decimals) {
-          amountNormalized = Number(BigInt(decoded.rawAmountWei)) / Math.pow(10, token.decimals);
-        }
+      if (decoded.rawAmountWei && decimals !== null) {
+        amountNormalized = Number(BigInt(decoded.rawAmountWei)) / Math.pow(10, decimals);
       }
 
-      // For withdrawals, fetch the transaction sender as the relayer
-      let relayerAddress = decoded.relayerAddress;
-      if (decoded.eventType === 'withdrawal' && !relayerAddress) {
-        const txHash = log.transactionHash;
-        if (!txSenders.has(txHash)) {
-          txSenders.set(txHash, await getTransactionSender(txHash));
-        }
-        relayerAddress = txSenders.get(txHash) || null;
-      }
+      const relayerAddress = isWithdrawal
+        ? (txSenders.get(log.transactionHash) ?? decoded.relayerAddress)
+        : decoded.relayerAddress;
 
-      await db.insert(schema.events)
+      await tx.insert(schema.events)
         .values({
           chain: 'ethereum',
           txHash: log.transactionHash,
-          logIndex: log.logIndex * 100 + i,
+          logIndex: log.logIndex * 100 + subIndex,
           blockNumber: Number(log.blockNumber),
           blockTimestamp: timestamps.get(log.blockNumber)!,
-          contractName: 'Relay',
+          contractName,
           eventName: decoded.eventName,
           eventType: decoded.eventType,
           tokenId,
@@ -208,12 +177,10 @@ async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
           metadataJson: JSON.stringify(decoded.metadata),
         })
         .onConflictDoNothing();
-
-      totalDecoded++;
     }
-  }
+  });
 
-  console.log(`  Processed: SmartWallet=${smartWalletLogs.length}, Relay=${relayLogs.length}, Decoded=${totalDecoded}`);
+  console.log(`  Processed: SmartWallet=${smartWalletLogs.length}, Relay=${relayLogs.length}, Decoded=${pending.length}`);
 }
 
 async function main() {
