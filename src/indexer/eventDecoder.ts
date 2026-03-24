@@ -1,5 +1,5 @@
 import { decodeEventLog, decodeAbiParameters, parseAbiParameters, type Log, type Abi } from 'viem';
-import { SMART_WALLET_ABI, RELAY_ABI, type EventType } from './config';
+import { SMART_WALLET_ABI, RELAY_ABI, ETH_EVENT_SIGNATURES, type EventType } from './config';
 import { RELAY_ABI as POLYGON_RELAY_ABI, POLYGON_EVENT_SIGNATURES } from './configPolygon';
 
 export interface DecodedEvent {
@@ -151,6 +151,68 @@ export function decodeSmartWalletEvent(log: Log): DecodedEvent[] {
       }];
     } catch (err) {
       console.warn(`[decodeSmartWalletEvent] Failed to decode Polygon Unshield at block ${log.blockNumber}: ${err}`);
+      return [];
+    }
+  }
+
+  // Ethereum SmartWallet Shield (5-param, uint120[] fees)
+  if (eventSig === ETH_EVENT_SIGNATURES.SMARTWALLET_SHIELD.toLowerCase()) {
+    try {
+      const decoded = decodeEventLog({
+        abi: SMART_WALLET_ABI,
+        data: log.data,
+        topics: log.topics,
+        eventName: 'Shield',
+      });
+      const args = decoded.args as unknown as ShieldArgs;
+      const events: DecodedEvent[] = [];
+      for (const commitment of args.commitments) {
+        if (Number(commitment.token.tokenType) === 0) {
+          events.push({
+            eventName: 'Shield',
+            eventType: 'deposit',
+            tokenAddress: commitment.token.tokenAddress,
+            rawAmountWei: commitment.value.toString(),
+            relayerAddress: null,
+            fromAddress: null,
+            toAddress: null,
+            metadata: {
+              treeNumber: args.treeNumber.toString(),
+              startPosition: args.startPosition.toString(),
+            },
+          });
+        }
+      }
+      return events;
+    } catch (err) {
+      console.warn(`[decodeSmartWalletEvent] Failed to decode ETH Shield at block ${log.blockNumber}: ${err}`);
+      return [];
+    }
+  }
+
+  // Ethereum SmartWallet Unshield
+  if (eventSig === ETH_EVENT_SIGNATURES.SMARTWALLET_UNSHIELD.toLowerCase()) {
+    try {
+      const decoded = decodeEventLog({
+        abi: SMART_WALLET_ABI,
+        data: log.data,
+        topics: log.topics,
+        eventName: 'Unshield',
+      });
+      const args = decoded.args as unknown as UnshieldArgs;
+      if (Number(args.token.tokenType) !== 0) return [];
+      return [{
+        eventName: 'Unshield',
+        eventType: 'withdrawal',
+        tokenAddress: args.token.tokenAddress,
+        rawAmountWei: args.amount.toString(),
+        relayerAddress: null,
+        fromAddress: null,
+        toAddress: args.to,
+        metadata: { fee: args.fee.toString() },
+      }];
+    } catch (err) {
+      console.warn(`[decodeSmartWalletEvent] Failed to decode ETH Unshield at block ${log.blockNumber}: ${err}`);
       return [];
     }
   }
