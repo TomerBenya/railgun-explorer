@@ -154,12 +154,15 @@ async function main() {
   console.log('[start-all] Starting web server...');
   await import('./server');
 
-  // Start periodic analytics (runs immediately, then every 5 minutes)
-  startAnalyticsInterval();
-
-  // Start both indexers in the background after server is ready
+  // Start Ethereum indexer immediately, stagger Polygon by 30s
+  // to avoid both indexers competing for SQLite writes simultaneously
   startEthereumIndexer();
-  startPolygonIndexer();
+  setTimeout(() => startPolygonIndexer(), 30_000);
+
+  // Delay analytics until indexers have had time to populate data
+  // (running analytics on an empty DB is wasted work)
+  console.log('[start-all] Waiting 2 minutes before starting analytics...');
+  setTimeout(() => startAnalyticsInterval(), 2 * 60 * 1000);
 }
 
 main().catch((err) => {

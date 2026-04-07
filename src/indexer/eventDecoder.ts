@@ -217,62 +217,68 @@ export function decodeSmartWalletEvent(log: Log): DecodedEvent[] {
     }
   }
 
-  // Fall back to Ethereum SmartWallet ABI
-  try {
-    const decoded = decodeEventLog({
-      abi: SMART_WALLET_ABI,
-      data: log.data,
-      topics: log.topics,
-    });
+  // Fall back to Ethereum SmartWallet ABI, then Relay ABI
+  // The SmartWallet contract may emit the 4-param Shield (no fees, same as Relay)
+  // instead of the 5-param Shield (with fees) defined in SMART_WALLET_ABI.
+  for (const abi of [SMART_WALLET_ABI, RELAY_ABI]) {
+    try {
+      const decoded = decodeEventLog({
+        abi,
+        data: log.data,
+        topics: log.topics,
+      });
 
-    const eventName = decoded.eventName as unknown as string;
-    const events: DecodedEvent[] = [];
+      const eventName = decoded.eventName as unknown as string;
+      const events: DecodedEvent[] = [];
 
-    if (eventName === 'Shield') {
-      // Shield contains multiple commitments, each with token and value
-      const args = decoded.args as unknown as ShieldArgs;
+      if (eventName === 'Shield') {
+        // Shield contains multiple commitments, each with token and value
+        const args = decoded.args as unknown as ShieldArgs;
 
-      for (const commitment of args.commitments) {
+        for (const commitment of args.commitments) {
+          // Only process ERC20 tokens (tokenType === 0)
+          if (commitment.token.tokenType === 0) {
+            events.push({
+              eventName: 'Shield',
+              eventType: 'deposit',
+              tokenAddress: commitment.token.tokenAddress,
+              rawAmountWei: commitment.value.toString(),
+              relayerAddress: null,
+              fromAddress: null,
+              toAddress: null,
+              metadata: {
+                treeNumber: args.treeNumber.toString(),
+                startPosition: args.startPosition.toString(),
+              },
+            });
+          }
+        }
+      } else if (eventName === 'Unshield') {
+        const args = decoded.args as unknown as UnshieldArgs;
         // Only process ERC20 tokens (tokenType === 0)
-        if (commitment.token.tokenType === 0) {
+        if (args.token.tokenType === 0) {
           events.push({
-            eventName: 'Shield',
-            eventType: 'deposit',
-            tokenAddress: commitment.token.tokenAddress,
-            rawAmountWei: commitment.value.toString(),
+            eventName: 'Unshield',
+            eventType: 'withdrawal',
+            tokenAddress: args.token.tokenAddress,
+            rawAmountWei: args.amount.toString(),
             relayerAddress: null,
             fromAddress: null,
-            toAddress: null,
+            toAddress: args.to,
             metadata: {
-              treeNumber: args.treeNumber.toString(),
-              startPosition: args.startPosition.toString(),
+              fee: args.fee.toString(),
             },
           });
         }
       }
-    } else if (eventName === 'Unshield') {
-      const args = decoded.args as unknown as UnshieldArgs;
-      // Only process ERC20 tokens (tokenType === 0)
-      if (args.token.tokenType === 0) {
-        events.push({
-          eventName: 'Unshield',
-          eventType: 'withdrawal',
-          tokenAddress: args.token.tokenAddress,
-          rawAmountWei: args.amount.toString(),
-          relayerAddress: null,
-          fromAddress: null,
-          toAddress: args.to,
-          metadata: {
-            fee: args.fee.toString(),
-          },
-        });
-      }
-    }
 
-    return events;
-  } catch {
-    return [];
+      if (events.length > 0) return events;
+    } catch {
+      // Try next ABI
+      continue;
+    }
   }
+  return [];
 }
 
 export function decodeRelayEvent(log: Log, abi?: Abi): DecodedEvent[] {
@@ -346,7 +352,60 @@ export function decodeRelayEvent(log: Log, abi?: Abi): DecodedEvent[] {
     }
 
     return events;
-  } catch (err) {
+  } catch {
+    // Primary ABI failed — try the 5-param Shield ABI (with fees).
+    // The Relay contract was upgraded post-block ~16,788,910 to emit the
+    // 5-param Shield (topic 0x3a5b9dc2...) instead of the 4-param version.
+    try {
+      const decoded = decodeEventLog({
+        abi: SMART_WALLET_ABI,
+        data: log.data,
+        topics: log.topics,
+      });
+
+      const eventName = decoded.eventName as unknown as string;
+      const events: DecodedEvent[] = [];
+
+      if (eventName === 'Shield') {
+        const args = decoded.args as unknown as ShieldArgs;
+        for (const commitment of args.commitments) {
+          if (commitment.token.tokenType === 0) {
+            events.push({
+              eventName: 'Shield',
+              eventType: 'deposit',
+              tokenAddress: commitment.token.tokenAddress,
+              rawAmountWei: commitment.value.toString(),
+              relayerAddress: null,
+              fromAddress: null,
+              toAddress: null,
+              metadata: {
+                treeNumber: args.treeNumber.toString(),
+                startPosition: args.startPosition.toString(),
+              },
+            });
+          }
+        }
+      } else if (eventName === 'Unshield') {
+        const args = decoded.args as unknown as UnshieldArgs;
+        if (args.token.tokenType === 0) {
+          events.push({
+            eventName: 'Unshield',
+            eventType: 'withdrawal',
+            tokenAddress: args.token.tokenAddress,
+            rawAmountWei: args.amount.toString(),
+            relayerAddress: null,
+            fromAddress: null,
+            toAddress: args.to,
+            metadata: { fee: args.fee.toString() },
+          });
+        }
+      }
+
+      if (events.length > 0) return events;
+    } catch {
+      // Fall through to Polygon-specific handlers
+    }
+
     // For Polygon: try to decode directly from data if signature doesn't match
     // Polygon uses different event signatures that don't match standard ABIs
     const eventSig = log.topics[0]?.toLowerCase();
@@ -443,10 +502,6 @@ export function decodeRelayEvent(log: Log, abi?: Abi): DecodedEvent[] {
       }
     }
     
-    // Log unknown event signatures for debugging
-    if (log.topics && log.topics[0]) {
-      console.warn(`[decodeRelayEvent] Unknown event signature: ${log.topics[0]} at block ${log.blockNumber}`);
-    }
     // Unknown event signature - skip silently
     return [];
   }

@@ -6,7 +6,7 @@ import {
   RPC_URL, START_BLOCK, CONFIRMATION_BLOCKS, BATCH_SIZE,
   CONTRACTS,
 } from './config';
-import { decodeSmartWalletEvent, decodeRelayEvent } from './eventDecoder';
+import { decodeRelayEvent } from './eventDecoder';
 import { resolveTokenId, clearTokenCache } from './tokenResolver';
 
 const MAX_RETRIES = 5;
@@ -78,37 +78,30 @@ async function getTransactionSender(txHash: string): Promise<string | null> {
 async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
   console.log(`Indexing blocks ${fromBlock} to ${toBlock}...`);
 
-  // Fetch logs from both contracts in parallel
-  const [smartWalletLogs, relayLogs] = await withRetry(
-    () => Promise.all([
-      client.getLogs({ address: CONTRACTS.smartWallet, fromBlock, toBlock }),
-      client.getLogs({ address: CONTRACTS.relay, fromBlock, toBlock }),
-    ]),
+  // Fetch logs from Relay contract (emits all Shield/Unshield events)
+  const relayLogs = await withRetry(
+    () => client.getLogs({ address: CONTRACTS.relay, fromBlock, toBlock }),
     `getLogs(${fromBlock}-${toBlock})`
   );
 
   // Decode all logs first (synchronous)
   type PendingEvent = {
     contractName: string;
-    log: typeof smartWalletLogs[number];
-    decoded: ReturnType<typeof decodeSmartWalletEvent>[number];
+    log: typeof relayLogs[number];
+    decoded: ReturnType<typeof decodeRelayEvent>[number];
     subIndex: number;
     isWithdrawal: boolean;
   };
 
   const pending: PendingEvent[] = [];
 
-  for (const log of smartWalletLogs) {
-    const decoded = decodeSmartWalletEvent(log);
-    decoded.forEach((d, i) => pending.push({ contractName: 'SmartWallet', log, decoded: d, subIndex: i, isWithdrawal: false }));
-  }
   for (const log of relayLogs) {
     const decoded = decodeRelayEvent(log);
     decoded.forEach((d, i) => pending.push({ contractName: 'Relay', log, decoded: d, subIndex: i, isWithdrawal: d.eventType === 'withdrawal' }));
   }
 
   if (pending.length === 0) {
-    console.log(`  Processed: SmartWallet=${smartWalletLogs.length}, Relay=${relayLogs.length}, Decoded=0`);
+    console.log(`  Processed: Relay=${relayLogs.length}, Decoded=0`);
     return;
   }
 
@@ -180,7 +173,7 @@ async function indexBatch(fromBlock: bigint, toBlock: bigint): Promise<void> {
     }
   });
 
-  console.log(`  Processed: SmartWallet=${smartWalletLogs.length}, Relay=${relayLogs.length}, Decoded=${pending.length}`);
+  console.log(`  Processed: Relay=${relayLogs.length}, Decoded=${pending.length}`);
 }
 
 async function main() {
