@@ -199,7 +199,8 @@ async function main() {
       currentBlock = toBlock;
     } catch (err) {
       console.error(`Failed to index batch ${currentBlock + 1n}-${toBlock}:`, err);
-      throw err; // Re-throw after logging; can be changed to continue for resilience
+      // Skip this batch and continue indexing to avoid hanging on bad data
+      currentBlock = toBlock;
     }
 
     // Clear token cache periodically to free memory
