@@ -8,6 +8,17 @@ console.log('Running migrations...');
 migrate(db, { migrationsFolder });
 console.log('Migrations complete.');
 
+// Ensure indexes exist for query performance (idempotent)
+console.log('Ensuring indexes...');
+const sqlite = (db as any).session?.client;
+if (sqlite?.exec) {
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS events_token_id_idx ON events(token_id)`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS events_chain_idx ON events(chain)`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS events_chain_token_idx ON events(chain, token_id)`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS events_block_timestamp_idx ON events(block_timestamp)`);
+  console.log('Indexes ready.');
+}
+
 // Import app after migrations
 const { default: app } = await import('./web/app');
 

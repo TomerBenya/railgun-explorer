@@ -56,6 +56,23 @@ async function runAnalytics(): Promise<void> {
     });
     await feesProc.exited;
 
+    // Fetch historical token prices from DeFiLlama for any (date, chain, token)
+    // combos that don't yet have a price cached.
+    const pricesProc = spawn(['bun', 'run', 'src/analytics/fetchPrices.ts'], {
+      stdout: 'inherit',
+      stderr: 'inherit',
+      cwd: process.cwd(),
+    });
+    await pricesProc.exited;
+
+    // Back-populate USD columns in daily_flows from cached prices.
+    const usdProc = spawn(['bun', 'run', 'src/analytics/normalizeUsd.ts'], {
+      stdout: 'inherit',
+      stderr: 'inherit',
+      cwd: process.cwd(),
+    });
+    await usdProc.exited;
+
     console.log('[start-all] Analytics complete.');
   } finally {
     analyticsRunning = false;

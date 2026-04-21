@@ -332,6 +332,8 @@ app.use('*', jsxRenderer(({ children }) => {
             margin-left: 0.5rem;
             color: #7d8590;
           }
+          .token-amount { color: #7d8590; font-size: 0.85rem; }
+          .muted { color: #7d8590; }
           .pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; margin: 1.5rem 0; padding: 1rem 0; border-top: 1px solid #30363d; }
           .pagination-info { color: #7d8590; font-size: 0.9rem; }
           .pagination-controls { display: flex; align-items: center; gap: 0.25rem; }
@@ -710,29 +712,32 @@ app.get('/tokens', async (c) => {
     joinConditions.push(lte(schema.dailyFlows.date, filters.endDate));
   }
 
-  // Fetch all tokens with filtered stats
+  // Fetch all tokens with filtered stats. SQLite sorts NULLs last in DESC,
+  // so tokens without USD price data fall to the bottom automatically.
   const tokenStatsQuery = chain === 'all'
     ? db.select({
         id: schema.tokens.id,
         symbol: schema.tokens.symbol,
         address: schema.tokens.address,
         totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
+        totalDepositsUsd: sql<number | null>`sum(${schema.dailyFlows.totalDepositsUsd})`,
       })
         .from(schema.tokens)
         .leftJoin(schema.dailyFlows, and(...joinConditions))
         .groupBy(schema.tokens.id)
-        .orderBy(desc(sql`sum(${schema.dailyFlows.totalDeposits})`))
+        .orderBy(desc(sql`sum(${schema.dailyFlows.totalDepositsUsd})`))
     : db.select({
         id: schema.tokens.id,
         symbol: schema.tokens.symbol,
         address: schema.tokens.address,
         totalDeposits: sql<number>`sum(${schema.dailyFlows.totalDeposits})`,
+        totalDepositsUsd: sql<number | null>`sum(${schema.dailyFlows.totalDepositsUsd})`,
       })
         .from(schema.tokens)
         .leftJoin(schema.dailyFlows, and(...joinConditions))
         .where(eq(schema.tokens.chain, chain))
         .groupBy(schema.tokens.id)
-        .orderBy(desc(sql`sum(${schema.dailyFlows.totalDeposits})`));
+        .orderBy(desc(sql`sum(${schema.dailyFlows.totalDepositsUsd})`));
 
   const tokenStats = await tokenStatsQuery;
 
@@ -740,6 +745,11 @@ app.get('/tokens', async (c) => {
   const filteredTokens = filters.minVolume
     ? tokenStats.filter(t => (t.totalDeposits || 0) >= (filters.minVolume || 0))
     : tokenStats;
+
+  const formatUsd = (v: number) =>
+    `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const formatTokens = (v: number) =>
+    v.toLocaleString('en-US', { maximumFractionDigits: 4 });
 
   return c.render(
     <section>
@@ -754,19 +764,28 @@ app.get('/tokens', async (c) => {
 
       <table id="tokens-table">
         <thead>
-          <tr><th>Symbol</th><th>Total Deposits</th><th>Details</th></tr>
+          <tr><th>Symbol</th><th>Total Deposits (USD)</th><th>Details</th></tr>
         </thead>
         <tbody>
           {filteredTokens.length === 0 ? (
             <tr><td colSpan={3}>No tokens found for the selected filters.</td></tr>
           ) : (
-            filteredTokens.map((t, idx) => (
-              <tr data-row={idx}>
-                <td>{t.symbol || 'Unknown'}</td>
-                <td>{t.totalDeposits?.toFixed(2) || '0'}</td>
-                <td><a href={`/tokens/${t.id}?chain=${chain}`}>View</a></td>
-              </tr>
-            ))
+            filteredTokens.map((t, idx) => {
+              const tokens = t.totalDeposits ?? 0;
+              const usd = t.totalDepositsUsd;
+              const symbol = t.symbol || 'Unknown';
+              return (
+                <tr data-row={idx}>
+                  <td>{symbol}</td>
+                  <td>
+                    {usd != null ? formatUsd(usd) : <span class="muted">—</span>}
+                    {' '}
+                    <span class="token-amount">({formatTokens(tokens)} {symbol})</span>
+                  </td>
+                  <td><a href={`/tokens/${t.id}?chain=${chain}`}>View</a></td>
+                </tr>
+              );
+            })
           )}
         </tbody>
       </table>

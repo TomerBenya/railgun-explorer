@@ -29,6 +29,13 @@
       "when": 1765782939045,
       "tag": "0003_tired_moonstone",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1776789692421,
+      "tag": "0004_pretty_ironclad",
+      "breakpoints": true
     }
   ]
 }

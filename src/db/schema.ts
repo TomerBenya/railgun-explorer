@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, primaryKey, unique } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, primaryKey, unique, index } from 'drizzle-orm/sqlite-core';
 
 // Key-value metadata store (for last_indexed_block_eth, last_indexed_block_polygon, etc.)
 export const metadata = sqliteTable('metadata', {
@@ -39,6 +39,11 @@ export const events = sqliteTable('events', {
 }, (table) => ({
   // Idempotency constraint: same tx/log can exist on different chains
   txLogUnique: unique().on(table.chain, table.txHash, table.logIndex),
+  // Indexes for query performance
+  tokenIdIdx: index('events_token_id_idx').on(table.tokenId),
+  chainIdx: index('events_chain_idx').on(table.chain),
+  chainTokenIdx: index('events_chain_token_idx').on(table.chain, table.tokenId),
+  blockTimestampIdx: index('events_block_timestamp_idx').on(table.blockTimestamp),
 }));
 
 // Pre-computed daily aggregates per token
@@ -51,6 +56,19 @@ export const dailyFlows = sqliteTable('daily_flows', {
   netFlow: real('net_flow').notNull().default(0),
   depositTxCount: integer('deposit_tx_count').notNull().default(0),
   withdrawalTxCount: integer('withdrawal_tx_count').notNull().default(0),
+  totalDepositsUsd: real('total_deposits_usd'), // null if price unavailable
+  totalWithdrawalsUsd: real('total_withdrawals_usd'),
+  netFlowUsd: real('net_flow_usd'),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.date, table.chain, table.tokenId] }),
+}));
+
+// Cached daily token prices from DeFiLlama
+export const tokenPricesDaily = sqliteTable('token_prices_daily', {
+  date: text('date').notNull(), // "YYYY-MM-DD"
+  chain: text('chain').notNull(),
+  tokenId: integer('token_id').notNull().references(() => tokens.id),
+  priceUsd: real('price_usd').notNull(),
 }, (table) => ({
   pk: primaryKey({ columns: [table.date, table.chain, table.tokenId] }),
 }));
@@ -99,3 +117,4 @@ export type DailyFlow = typeof dailyFlows.$inferSelect;
 export type RelayerStatsDaily = typeof relayerStatsDaily.$inferSelect;
 export type RelayerFeeRevenueDaily = typeof relayerFeeRevenueDaily.$inferSelect;
 export type DailyTokenDiversity = typeof dailyTokenDiversity.$inferSelect;
+export type TokenPriceDaily = typeof tokenPricesDaily.$inferSelect;
