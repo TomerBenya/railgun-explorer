@@ -1835,6 +1835,27 @@ app.get('/charts', async (c) => {
             return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
           };
 
+          // Helper: Centered moving average to smooth noisy daily series
+          const smoothSeries = (values, window = 7) => {
+            if (!Array.isArray(values)) return values;
+            const half = Math.floor(window / 2);
+            return values.map((v, i) => {
+              if (v === null || v === undefined) return null;
+              let sum = 0;
+              let count = 0;
+              const start = Math.max(0, i - half);
+              const end = Math.min(values.length - 1, i + half);
+              for (let j = start; j <= end; j++) {
+                const x = values[j];
+                if (x !== null && x !== undefined && !isNaN(x)) {
+                  sum += x;
+                  count += 1;
+                }
+              }
+              return count > 0 ? sum / count : null;
+            });
+          };
+
           // Common dark theme chart options
           const darkThemeOptions = {
             responsive: true,
@@ -1985,15 +2006,15 @@ app.get('/charts', async (c) => {
               labels: data.hhi.labels,
               datasets: [
                 {
-                  label: 'HHI',
-                  data: data.hhi.values,
+                  label: 'HHI (7-day avg)',
+                  data: smoothSeries(data.hhi.values, 7),
                   borderColor: '#a371f7',
                   backgroundColor: 'rgba(163, 113, 247, 0.1)',
                   borderWidth: 2,
                   fill: false,
-                  tension: 0.3,
-                  pointRadius: 2,
-                  pointHoverRadius: 5
+                  tension: 0.4,
+                  pointRadius: 0,
+                  pointHoverRadius: 4
                 }
               ]
             },
@@ -2138,28 +2159,28 @@ app.get('/charts', async (c) => {
               labels: data.activeRelayers.labels,
               datasets: [
                 {
-                  label: 'Ethereum',
-                  data: data.activeRelayers.ethereum,
+                  label: 'Ethereum (7-day avg)',
+                  data: smoothSeries(data.activeRelayers.ethereum, 7),
                   borderColor: '#a371f7',
                   backgroundColor: 'rgba(163, 113, 247, 0.1)',
                   borderWidth: 2,
                   borderDash: [],
                   fill: false,
-                  tension: 0.3,
-                  pointRadius: 2,
-                  pointHoverRadius: 5
+                  tension: 0.4,
+                  pointRadius: 0,
+                  pointHoverRadius: 4
                 },
                 {
-                  label: 'Polygon',
-                  data: data.activeRelayers.polygon,
+                  label: 'Polygon (7-day avg)',
+                  data: smoothSeries(data.activeRelayers.polygon, 7),
                   borderColor: '#56d364',
                   backgroundColor: 'rgba(86, 211, 100, 0.1)',
                   borderWidth: 2,
                   borderDash: [5, 5],
                   fill: false,
-                  tension: 0.3,
-                  pointRadius: 2,
-                  pointHoverRadius: 5
+                  tension: 0.4,
+                  pointRadius: 0,
+                  pointHoverRadius: 4
                 }
               ]
             },
@@ -2174,28 +2195,28 @@ app.get('/charts', async (c) => {
               labels: data.top5Share.labels,
               datasets: [
                 {
-                  label: 'Ethereum',
-                  data: data.top5Share.ethereum,
+                  label: 'Ethereum (7-day avg)',
+                  data: smoothSeries(data.top5Share.ethereum, 7),
                   borderColor: '#ffa657',
                   backgroundColor: 'rgba(255, 166, 87, 0.1)',
                   borderWidth: 2,
                   borderDash: [],
                   fill: false,
-                  tension: 0.3,
-                  pointRadius: 2,
-                  pointHoverRadius: 5
+                  tension: 0.4,
+                  pointRadius: 0,
+                  pointHoverRadius: 4
                 },
                 {
-                  label: 'Polygon',
-                  data: data.top5Share.polygon,
+                  label: 'Polygon (7-day avg)',
+                  data: smoothSeries(data.top5Share.polygon, 7),
                   borderColor: '#58a6ff',
                   backgroundColor: 'rgba(88, 166, 255, 0.1)',
                   borderWidth: 2,
                   borderDash: [5, 5],
                   fill: false,
-                  tension: 0.3,
-                  pointRadius: 2,
-                  pointHoverRadius: 5
+                  tension: 0.4,
+                  pointRadius: 0,
+                  pointHoverRadius: 4
                 }
               ]
             },
